@@ -126,15 +126,15 @@ The system integrates AI APIs to automate decision support, improve response qua
 - Project setup (Laravel + React)  
 - Authentication & role management  
 - Property, tenant, and unit CRUD  
-- Basic UI implementation  
+- Basic UI implementation
+- User authentication (JWT)  
 
 ### Milestone 2 – Core Features & System Setup
 - Secure API handling  
 - Complaint & Maintenance system  
 - Property, Tenant, and Unit Management (CRUD)  
 - Rent & Payment tracking  
-- Dashboard (role-based)  
-- User authentication (JWT)  
+- Dashboard (role-based) 
 
 ### Milestone 3 – AI Integration & Finalization
 - AI chatbot integration (embedded in Complaint Page)  
