@@ -1,0 +1,38 @@
+services:
+  db:
+    image: mysql:8.0
+    container_name: tenantsync_db
+    environment:
+      MYSQL_DATABASE: tenantsync
+      MYSQL_ROOT_PASSWORD: root
+    ports:
+      - "3306:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: tenantsync_server
+    working_dir: /var/www
+    volumes:
+      - ./server:/var/www
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+    command: sh -c "php -m | grep -E 'PDO|pdo_mysql|mysql' && php artisan serve --host=0.0.0.0 --port=8000"
+
+  client:
+    image: node:20
+    container_name: tenantsync_client
+    working_dir: /app
+    volumes:
+      - ./client:/app
+    ports:
+      - "5173:5173"
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
+
+volumes:
+  db_data:
