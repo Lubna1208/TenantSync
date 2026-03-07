@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, Navigate, useNavigate } from "react-router-dom";
 import "./Auth.css";
 
 const API = "http://localhost:8000/api";
@@ -9,7 +9,7 @@ type User = {
   name: string;
   email: string;
   date_of_birth?: string | null;
-  role?: string;
+  role?: "admin" | "manager" | "tenant" | string;
   status?: string;
 };
 
@@ -25,7 +25,22 @@ function safeParseUser(raw: string | null): User | null {
   }
 }
 
+function getDashboardPath(role?: string) {
+  switch (role) {
+    case "admin":
+      return "/dashboard";
+    case "manager":
+      return "/dashboard-manager";
+    case "tenant":
+      return "/dashboard-tenant";
+    default:
+      return "/login";
+  }
+}
+
 export default function Login() {
+  const navigate = useNavigate();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [msg, setMsg] = useState("");
@@ -45,6 +60,7 @@ export default function Login() {
 
         if (!res.ok) {
           localStorage.removeItem("ts_user");
+          localStorage.removeItem("ts_token");
           sessionStorage.removeItem("ts_user");
           setUser(null);
           return;
@@ -54,6 +70,7 @@ export default function Login() {
 
         if (!data?.id) {
           localStorage.removeItem("ts_user");
+          localStorage.removeItem("ts_token");
           sessionStorage.removeItem("ts_user");
           setUser(null);
           return;
@@ -63,6 +80,7 @@ export default function Login() {
         setUser(data);
       } catch {
         localStorage.removeItem("ts_user");
+        localStorage.removeItem("ts_token");
         sessionStorage.removeItem("ts_user");
         setUser(null);
       } finally {
@@ -98,34 +116,23 @@ export default function Login() {
       }
 
       localStorage.setItem("ts_user", JSON.stringify(data.user));
+
+      if (data?.token) {
+        localStorage.setItem("ts_token", data.token);
+      }
+
       sessionStorage.removeItem("ts_user");
       setUser(data.user);
       setMsg("Login successful");
       setEmail("");
       setPassword("");
+
+      navigate(getDashboardPath(data.user.role), { replace: true });
     } catch {
       setMsg("Network error: backend is not reachable.");
     }
   }
-
-  async function logout() {
-    try {
-      await fetch(`${API}/auth/logout`, {
-        method: "POST",
-        credentials: "include",
-      });
-    } catch {
-      // ignore network error here, still clear local UI state
-    }
-
-    localStorage.removeItem("ts_user");
-    sessionStorage.removeItem("ts_user");
-    setUser(null);
-    setEmail("");
-    setPassword("");
-    setMsg("Logged out");
-  }
-
+  
   if (checkingAuth) {
     return (
       <div className="auth-page">
@@ -138,6 +145,10 @@ export default function Login() {
         </div>
       </div>
     );
+  }
+
+  if (user) {
+    return <Navigate to={getDashboardPath(user.role)} replace />;
   }
 
   return (
@@ -168,7 +179,10 @@ export default function Login() {
               </div>
               <div className="auth-visual-content">
                 <h3>Smart Property Management</h3>
-                <p>Fast, organized, and simple access for your TenantSync workflow.</p>
+                <p>
+                  Fast, organized, and simple access for your TenantSync
+                  workflow.
+                </p>
               </div>
             </div>
 
@@ -191,54 +205,43 @@ export default function Login() {
                 <p>Enter your email and password to access your account</p>
               </div>
 
-              {!user ? (
-                <form onSubmit={submit} className="auth-form" autoComplete="off">
-                  <div className="input-group">
-                    <label>Email</label>
-                    <input
-                      autoComplete="username"
-                      placeholder="Enter your email"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                    />
-                  </div>
-
-                  <div className="input-group">
-                    <label>Password</label>
-                    <input
-                      autoComplete="current-password"
-                      placeholder="Enter your password"
-                      type="password"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                    />
-                  </div>
-
-                  <button type="submit" className="auth-btn primary-btn">
-                    Sign In
-                  </button>
-
-                  <div className="auth-switch-text">
-                    Don&apos;t have an account? <Link to="/register">Create one</Link>
-                  </div>
-                </form>
-              ) : (
-                <div className="logged-user-card">
-                  <div className="logged-avatar">
-                    {user.name?.charAt(0)?.toUpperCase() || "U"}
-                  </div>
-                  <h3>{user.name}</h3>
-                  <p>{user.email}</p>
-                  <button onClick={logout} className="auth-btn danger-btn">
-                    Logout
-                  </button>
+              <form onSubmit={submit} className="auth-form" autoComplete="off">
+                <div className="input-group">
+                  <label>Email</label>
+                  <input
+                    autoComplete="username"
+                    placeholder="Enter your email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                  />
                 </div>
-              )}
+
+                <div className="input-group">
+                  <label>Password</label>
+                  <input
+                    autoComplete="current-password"
+                    placeholder="Enter your password"
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                </div>
+
+                <button type="submit" className="auth-btn primary-btn">
+                  Sign In
+                </button>
+
+                <div className="auth-switch-text">
+                  Don't have an account? <Link to="/register">Create one</Link>
+                </div>
+              </form>
 
               {msg && (
                 <div
                   className={`auth-message ${
-                    msg.toLowerCase().includes("successful") ? "success" : "error"
+                    msg.toLowerCase().includes("successful")
+                      ? "success"
+                      : "error"
                   }`}
                 >
                   {msg}
