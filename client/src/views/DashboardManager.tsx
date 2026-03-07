@@ -45,6 +45,7 @@ export default function DashboardManager() {
     }
 
     localStorage.removeItem("ts_user");
+    localStorage.removeItem("ts_token");
     setUser(null);
     navigate("/login");
   }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+/*import { useEffect, useState } from 'react';
 import { Button, Form } from 'react-bootstrap';
 import ApiClient from '../api';
 import toast from 'react-hot-toast';
@@ -107,3 +107,4 @@ export default function Home() {
     </div>
   );
 }
+*/
