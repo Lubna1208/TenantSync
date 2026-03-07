@@ -93,9 +93,10 @@ class AuthController extends Controller
         );
 
         return response()->json([
-            'message' => 'Login successful',
-            'user' => $user,
-        ])->withCookie($cookie);
+    'message' => 'Login successful',
+    'token' => $token,
+    'user' => $user,
+    ])->withCookie($cookie);
     }
 
     public function me()
@@ -129,8 +130,9 @@ class AuthController extends Controller
         );
 
         return response()->json([
-            'message' => 'Token refreshed',
-            'user' => auth('api')->user(),
-        ])->withCookie($cookie);
+    'message' => 'Login successful',
+    'token' => $token,
+    'user' => $user,
+])->withCookie($cookie);
     }
 }

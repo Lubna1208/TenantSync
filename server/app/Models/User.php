@@ -36,4 +36,14 @@ class User extends Authenticatable implements JWTSubject
     {
         return [];
     }
+
+    public function tenant()
+    {
+        return $this->hasOne(Tenant::class);
+    }
+
+    public function apartments()
+    {
+        return $this->hasMany(Apartment::class, 'owner_id');
+    }
 }
