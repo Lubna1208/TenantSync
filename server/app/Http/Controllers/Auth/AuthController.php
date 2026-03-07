@@ -12,8 +12,8 @@ class AuthController extends Controller
 {
     public function __construct()
     {
-        $this->middleware('jwt.cookie', ['except' => ['register', 'login']]);
-        $this->middleware('auth:api', ['except' => ['register', 'login']]);
+        $this->middleware('jwt.cookie', ['except' => ['register', 'login', 'logout']]);
+        $this->middleware('auth:api', ['except' => ['register', 'login', 'logout']]);
     }
 
     public function register(Request $request)
@@ -106,11 +106,27 @@ class AuthController extends Controller
 
     public function logout()
     {
-        auth('api')->logout();
+        try {
+            auth('api')->logout();
+        } catch (\Throwable $e) {
+            // Even when token is invalid/expired, we still clear the cookie client-side.
+        }
+
+        $expiredCookie = cookie(
+            'jwt_token',
+            '',
+            -1,
+            '/',
+            null,
+            false,
+            true,
+            false,
+            'Lax'
+        );
 
         return response()->json([
             'message' => 'Logout successful',
-        ])->withCookie(cookie()->forget('jwt_token'));
+        ])->withCookie($expiredCookie);
     }
 
     public function refresh()

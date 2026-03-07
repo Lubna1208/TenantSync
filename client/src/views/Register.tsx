@@ -24,6 +24,7 @@ export default function Register() {
     }
 
     localStorage.removeItem("ts_user");
+    localStorage.removeItem("ts_token");
     sessionStorage.removeItem("ts_user");
   }
 

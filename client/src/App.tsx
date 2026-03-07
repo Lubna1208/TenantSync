@@ -1,11 +1,13 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import type { ReactElement } from "react";
+import { useEffect, useState, type ReactElement } from "react";
 import Landing from "./views/Landing";
 import Register from "./views/Register";
 import Login from "./views/Login";
 import Dashboard from "./views/Dashboard";
 import DashboardManager from "./views/DashboardManager";
 import DashboardTenant from "./views/DashboardTenant";
+
+const API = "http://localhost:8000/api";
 
 type User = {
   id: number;
@@ -48,10 +50,14 @@ function getDashboardPath(role?: string) {
 function ProtectedRoute({
   children,
   allowedRoles,
+  authChecked,
 }: {
   children: ReactElement;
   allowedRoles: string[];
+  authChecked: boolean;
 }) {
+  if (!authChecked) return null;
+
   const user = getCurrentUser();
 
   if (!user) {
@@ -65,7 +71,15 @@ function ProtectedRoute({
   return children;
 }
 
-function PublicOnlyRoute({ children }: { children: ReactElement }) {
+function PublicOnlyRoute({
+  children,
+  authChecked,
+}: {
+  children: ReactElement;
+  authChecked: boolean;
+}) {
+  if (!authChecked) return null;
+
   const user = getCurrentUser();
 
   if (user) {
@@ -76,6 +90,43 @@ function PublicOnlyRoute({ children }: { children: ReactElement }) {
 }
 
 export default function App() {
+  const [authChecked, setAuthChecked] = useState(false);
+
+  useEffect(() => {
+    async function checkAuth() {
+      try {
+        const res = await fetch(`${API}/auth/me`, {
+          method: "GET",
+          credentials: "include",
+          cache: "no-store",
+        });
+
+        if (!res.ok) {
+          localStorage.removeItem("ts_user");
+          sessionStorage.removeItem("ts_user");
+          return;
+        }
+
+        const user = await res.json();
+
+        if (!user?.id) {
+          localStorage.removeItem("ts_user");
+          sessionStorage.removeItem("ts_user");
+          return;
+        }
+
+        localStorage.setItem("ts_user", JSON.stringify(user));
+      } catch {
+        localStorage.removeItem("ts_user");
+        sessionStorage.removeItem("ts_user");
+      } finally {
+        setAuthChecked(true);
+      }
+    }
+
+    void checkAuth();
+  }, []);
+
   return (
     <BrowserRouter>
       <Routes>
@@ -84,7 +135,7 @@ export default function App() {
         <Route
           path="/register"
           element={
-            <PublicOnlyRoute>
+            <PublicOnlyRoute authChecked={authChecked}>
               <Register />
             </PublicOnlyRoute>
           }
@@ -93,7 +144,7 @@ export default function App() {
         <Route
           path="/login"
           element={
-            <PublicOnlyRoute>
+            <PublicOnlyRoute authChecked={authChecked}>
               <Login />
             </PublicOnlyRoute>
           }
@@ -102,7 +153,7 @@ export default function App() {
         <Route
           path="/dashboard"
           element={
-            <ProtectedRoute allowedRoles={["admin"]}>
+            <ProtectedRoute allowedRoles={["admin"]} authChecked={authChecked}>
               <Dashboard />
             </ProtectedRoute>
           }
@@ -111,7 +162,10 @@ export default function App() {
         <Route
           path="/dashboard-manager"
           element={
-            <ProtectedRoute allowedRoles={["manager"]}>
+            <ProtectedRoute
+              allowedRoles={["manager"]}
+              authChecked={authChecked}
+            >
               <DashboardManager />
             </ProtectedRoute>
           }
@@ -120,7 +174,10 @@ export default function App() {
         <Route
           path="/dashboard-tenant"
           element={
-            <ProtectedRoute allowedRoles={["tenant"]}>
+            <ProtectedRoute
+              allowedRoles={["tenant"]}
+              authChecked={authChecked}
+            >
               <DashboardTenant />
             </ProtectedRoute>
           }

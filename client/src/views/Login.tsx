@@ -60,7 +60,6 @@ export default function Login() {
 
         if (!res.ok) {
           localStorage.removeItem("ts_user");
-          localStorage.removeItem("ts_token");
           sessionStorage.removeItem("ts_user");
           setUser(null);
           return;
@@ -70,7 +69,6 @@ export default function Login() {
 
         if (!data?.id) {
           localStorage.removeItem("ts_user");
-          localStorage.removeItem("ts_token");
           sessionStorage.removeItem("ts_user");
           setUser(null);
           return;
@@ -80,7 +78,6 @@ export default function Login() {
         setUser(data);
       } catch {
         localStorage.removeItem("ts_user");
-        localStorage.removeItem("ts_token");
         sessionStorage.removeItem("ts_user");
         setUser(null);
       } finally {
@@ -116,10 +113,6 @@ export default function Login() {
       }
 
       localStorage.setItem("ts_user", JSON.stringify(data.user));
-
-      if (data?.token) {
-        localStorage.setItem("ts_token", data.token);
-      }
 
       sessionStorage.removeItem("ts_user");
       setUser(data.user);
