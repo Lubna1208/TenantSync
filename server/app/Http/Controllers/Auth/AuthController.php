@@ -114,25 +114,25 @@ class AuthController extends Controller
     }
 
     public function refresh()
-    {
-        $token = auth('api')->refresh();
+{
+    $token = auth('api')->refresh();
 
-        $cookie = cookie(
-            'jwt_token',
-            $token,
-            1440,
-            '/',
-            null,
-            false,
-            true,
-            false,
-            'Lax'
-        );
+    $cookie = cookie(
+        'jwt_token',
+        $token,
+        1440,
+        '/',
+        null,
+        false,
+        true,
+        false,
+        'Lax'
+    );
 
-        return response()->json([
-    'message' => 'Login successful',
-    'token' => $token,
-    'user' => $user,
-])->withCookie($cookie);
-    }
+    return response()->json([
+        'message' => 'Token refreshed',
+        'token' => $token,
+        'user' => auth('api')->user(),
+    ])->withCookie($cookie);
+}
 }

@@ -10,12 +10,14 @@ class AdminUserSeeder extends Seeder
 {
     public function run(): void
     {
-        User::create([
-            'name' => 'Owner Admin',
-            'email' => 'admin@tenantsync.com',
-            'password' => Hash::make('password'),
-            'role' => 'admin',
-            'status' => 'active'
-        ]);
+        User::updateOrCreate(
+            ['email' => 'admin@tenantsync.com'],
+            [
+                'name' => 'Owner Admin',
+                'password' => Hash::make('password'),
+                'role' => 'admin',
+                'status' => 'active'
+            ]
+        );
     }
 }
