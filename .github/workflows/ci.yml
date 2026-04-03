@@ -1,0 +1,132 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_DATABASE: tenantsync_ci
+          MYSQL_USER: tenantsync
+          MYSQL_PASSWORD: secret
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=20
+
+    defaults:
+      run:
+        working-directory: server
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          extensions: mbstring, bcmath, pdo, pdo_mysql
+          coverage: none
+
+      - name: Install MySQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y default-mysql-client
+
+      - name: Copy environment
+        run: cp .env.example .env
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Configure Laravel environment
+        run: |
+          {
+            echo ""
+            echo "APP_ENV=testing"
+            echo "APP_DEBUG=true"
+            echo "APP_URL=http://127.0.0.1:8000"
+            echo "FRONTEND_URL=http://127.0.0.1:5173"
+            echo "DB_CONNECTION=mysql"
+            echo "DB_HOST=127.0.0.1"
+            echo "DB_PORT=3306"
+            echo "DB_DATABASE=tenantsync_ci"
+            echo "DB_USERNAME=tenantsync"
+            echo "DB_PASSWORD=secret"
+            echo "CACHE_DRIVER=array"
+            echo "QUEUE_CONNECTION=sync"
+            echo "SESSION_DRIVER=array"
+            echo "LOG_CHANNEL=stack"
+            echo "MAIL_MAILER=log"
+          } >> .env
+
+      - name: Generate app key and JWT secret
+        run: |
+          php artisan key:generate --force
+          php artisan jwt:secret --force
+          php artisan config:clear
+
+      - name: Wait for MySQL
+        run: |
+          until mysql -h 127.0.0.1 -u tenantsync -psecret -e "SELECT 1" >/dev/null 2>&1; do
+            echo "Waiting for MySQL..."
+            sleep 2
+          done
+
+      - name: Load schema
+        run: mysql -h 127.0.0.1 -u root -proot tenantsync_ci < ../database/schema.sql
+
+      - name: Load seed data
+        run: mysql -h 127.0.0.1 -u root -proot tenantsync_ci < ../database/data.sql
+
+      - name: Run Laravel smoke checks
+        run: |
+          php artisan route:list
+          php artisan test --testsuite=Unit
+
+  frontend:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: client
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: client/package-lock.json
+
+      - name: Create frontend environment
+        run: |
+          printf "VITE_API_URL=http://127.0.0.1:8000/api\n" > .env
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Lint frontend
+        run: npm run lint
+
+      - name: Build frontend
+        run: npm run build
