@@ -287,6 +287,45 @@
   font-size: 14px;
 }
 
+.manager-alert {
+  margin-bottom: 20px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.manager-alert.success {
+  background: #d4edda;
+  color: #155724;
+}
+
+.manager-alert.error {
+  background: #f8d7da;
+  color: #721c24;
+}
+
+.manager-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.manager-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 14px;
+}
+
+.manager-property-summary p {
+  margin: 0 0 8px 0;
+  color: #555;
+}
+
 .dashboard-footer-actions {
   margin-top: 20px;
   display: flex;

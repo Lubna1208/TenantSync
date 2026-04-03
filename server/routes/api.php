@@ -9,6 +9,7 @@ use App\Http\Controllers\RentPaymentController;
 use App\Http\Controllers\ComplaintController;
 use App\Http\Controllers\AnnouncementController;
 use App\Http\Controllers\OwnerController;
+use App\Http\Controllers\ManagerController;
 
 Route::post('/auth/register', [AuthController::class, 'register']);
 Route::post('/auth/login', [AuthController::class, 'login']);
@@ -28,6 +29,15 @@ Route::middleware(['jwt.cookie', 'auth.api.user'])->group(function () {
         Route::post('/properties', [OwnerController::class, 'storeProperty']);
         Route::delete('/properties/{id}', [OwnerController::class, 'destroyProperty']);
         Route::patch('/properties/{id}/manager', [OwnerController::class, 'assignManager']);
+    });
+
+    Route::middleware('role:manager')->prefix('manager')->group(function () {
+        Route::get('/dashboard', [ManagerController::class, 'dashboard']);
+        Route::post('/units', [ManagerController::class, 'storeUnit']);
+        Route::patch('/units/{id}', [ManagerController::class, 'updateUnit']);
+        Route::post('/units/{id}/assign-tenant', [ManagerController::class, 'assignTenant']);
+        Route::patch('/units/{id}/vacate', [ManagerController::class, 'vacateUnit']);
+        Route::delete('/units/{id}/tenant', [ManagerController::class, 'removeTenant']);
     });
 
     Route::apiResource('tenants', TenantController::class);

@@ -137,6 +137,12 @@ class OwnerController extends Controller
             ], 422);
         }
 
+        if ($request->manager_id && $this->managerAlreadyAssigned((int) $request->manager_id)) {
+            return response()->json([
+                'message' => 'A manager can only handle one property.',
+            ], 422);
+        }
+
         $property = Apartment::create([
             'owner_id' => $owner->id,
             'manager_id' => $request->manager_id,
@@ -206,6 +212,15 @@ class OwnerController extends Controller
             ], 422);
         }
 
+        if (
+            $request->manager_id &&
+            $this->managerAlreadyAssigned((int) $request->manager_id, $property->id)
+        ) {
+            return response()->json([
+                'message' => 'A manager can only handle one property.',
+            ], 422);
+        }
+
         $property->update([
             'manager_id' => $request->manager_id,
         ]);
@@ -219,5 +234,15 @@ class OwnerController extends Controller
             'message' => 'Manager assignment updated successfully',
             'data' => $property,
         ]);
+    }
+
+    private function managerAlreadyAssigned(int $managerId, ?int $ignorePropertyId = null): bool
+    {
+        return Apartment::query()
+            ->where('manager_id', $managerId)
+            ->when($ignorePropertyId, function ($query) use ($ignorePropertyId) {
+                $query->where('id', '!=', $ignorePropertyId);
+            })
+            ->exists();
     }
 }
