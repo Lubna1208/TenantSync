@@ -11,6 +11,7 @@ class Apartment extends Model
 
     protected $fillable = [
         'owner_id',
+        'manager_id',
         'name',
         'address',
         'total_units'
@@ -19,6 +20,11 @@ class Apartment extends Model
     public function owner()
     {
         return $this->belongsTo(User::class, 'owner_id');
+    }
+
+    public function manager()
+    {
+        return $this->belongsTo(User::class, 'manager_id');
     }
 
     public function units()
