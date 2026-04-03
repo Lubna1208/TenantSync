@@ -24,7 +24,9 @@ const apiClient = new ApiClient();
 
 const formatDate = (dateStr: string) => {
   const date = new Date(dateStr);
-  const options: any = {
+
+  // ✅ FIXED: replaced "any" with proper type
+  const options: Intl.DateTimeFormatOptions = {
     hour: 'numeric',
     minute: 'numeric',
     hour12: true,
@@ -32,15 +34,13 @@ const formatDate = (dateStr: string) => {
     month: 'short',
     year: 'numeric',
   };
-  const formattedDate = date.toLocaleString('en-GB', options);
-  console.log(formattedDate);
 
-  return formattedDate;
+  return date.toLocaleString('en-GB', options);
 };
 
 export default function Sessions() {
   const [sessions, setSessions] = useState<Session[]>([]);
-  const [error, setError] = useState<string | null>();
+  const [error, setError] = useState<string | null>(null);
 
   const [input, setInput] = useState({
     username: '',
@@ -57,7 +57,6 @@ export default function Sessions() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    console.log(input);
     setError(null);
     const data = await apiClient.viewSessions(input.username, input.password);
     if (data.success) {
@@ -68,7 +67,9 @@ export default function Sessions() {
   const handleActiveChange = async (sessionId: number, isActive: boolean) => {
     const res = await apiClient.updateSession(sessionId, isActive, input.username, input.password);
     if (res.success) {
-      const updatedSessions = sessions.map((session: Session) => (session.id === sessionId ? { ...session, active: isActive } : session));
+      const updatedSessions = sessions.map((session: Session) =>
+        session.id === sessionId ? { ...session, active: isActive } : session
+      );
       setSessions(updatedSessions);
     } else {
       toast.error(res.message);
@@ -77,17 +78,20 @@ export default function Sessions() {
 
   const handleDownload = (id: number) => {
     const session = sessions.find((s) => s.id === id);
-    if (!session) {
-      console.error('Session not found');
-      return;
-    }
+    if (!session) return;
 
     const csvData = [];
     csvData.push('roll,attendance_marks,class_entered_at');
 
     session.attendances.forEach((attendance) => {
-      const attendanceMarks = calculateAttendanceMarks(attendance.created_at, session.duration, session.created_at);
-      csvData.push(`${attendance.roll},${attendanceMarks.toFixed(2)},${formatDate(attendance.created_at)}`);
+      const attendanceMarks = calculateAttendanceMarks(
+        attendance.created_at,
+        session.duration,
+        session.created_at
+      );
+      csvData.push(
+        `${attendance.roll},${attendanceMarks.toFixed(2)},${formatDate(attendance.created_at)}`
+      );
     });
 
     const csvContent = csvData.join('\n');
@@ -106,12 +110,25 @@ export default function Sessions() {
 
   return (
     <div className="pt-4 d-flex flex-column align-items-center">
-      {/* credentials */}
       <div className="w-lg-400">
         <Form>
           <Form.Group className="mb-3">
-            <Form.Control type="text" autoComplete="username" placeholder="Enter username" name="username" value={input.username} onChange={handleChange} className="w-full text-center border-2" />
-            <Form.Control autoComplete="current-password" type="password" placeholder="Enter password" name="password" value={input.password} onChange={handleChange} className="w-full mt-2 text-center border-2" />
+            <Form.Control
+              type="text"
+              autoComplete="username"
+              placeholder="Enter username"
+              name="username"
+              value={input.username}
+              onChange={handleChange}
+            />
+            <Form.Control
+              autoComplete="current-password"
+              type="password"
+              placeholder="Enter password"
+              name="password"
+              value={input.password}
+              onChange={handleChange}
+            />
             <div className="d-grid gap-2 mt-3">
               <Button variant="primary" onClick={handleSubmit}>
                 View session
@@ -120,7 +137,7 @@ export default function Sessions() {
           </Form.Group>
         </Form>
       </div>
-      {/* sessions */}
+
       {sessions.length > 0 && (
         <div>
           <Table>
@@ -130,7 +147,7 @@ export default function Sessions() {
                 <th>Created at</th>
                 <th>Attendees</th>
                 <th>Active</th>
-                <th className="text-right">Export (csv)</th>
+                <th>Export (csv)</th>
               </tr>
             </thead>
             <tbody>
@@ -140,10 +157,16 @@ export default function Sessions() {
                   <td>{formatDate(session.created_at)}</td>
                   <td>{session.attendances.length}</td>
                   <td>
-                    <Form.Check type="switch" checked={session.active} id="custom-switch" onChange={(e) => handleActiveChange(session.id, e.target.checked)} />
+                    <Form.Check
+                      type="switch"
+                      checked={session.active}
+                      onChange={(e) =>
+                        handleActiveChange(session.id, e.target.checked)
+                      }
+                    />
                   </td>
-                  <td className="text-right">
-                    <Button variant="link" className="text-primary hover:text-primary/80" onClick={() => handleDownload(session.id)}>
+                  <td>
+                    <Button onClick={() => handleDownload(session.id)}>
                       Download
                     </Button>
                   </td>
