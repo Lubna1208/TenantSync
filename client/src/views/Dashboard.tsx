@@ -1,18 +1,42 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
+
+const API = "http://localhost:8000/api";
 
 type User = {
   id: number;
   name: string;
   email: string;
-  date_of_birth?: string | null;
   role?: string;
   status?: string;
 };
 
+type Manager = {
+  id: number;
+  name: string;
+  email: string;
+  managed_apartments_count?: number;
+};
+
+type Unit = {
+  id: number;
+  unit_number: string;
+};
+
+type Property = {
+  id: number;
+  name: string;
+  address: string;
+  total_units: number;
+  manager_id?: number | null;
+  manager?: Manager | null;
+  units?: Unit[];
+};
+
 function safeParseUser(raw: string | null): User | null {
-  if (!raw) return null;
-  if (raw === "undefined" || raw === "null") return null;
+  if (!raw || raw === "undefined" || raw === "null") {
+    return null;
+  }
 
   try {
     return JSON.parse(raw) as User;
@@ -22,413 +46,777 @@ function safeParseUser(raw: string | null): User | null {
   }
 }
 
+async function parseResponse<T>(response: Response): Promise<T | null> {
+  return response.json().catch(() => null);
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const [user, setUser] = useState<User | null>(() =>
     safeParseUser(localStorage.getItem("ts_user"))
   );
+  const [properties, setProperties] = useState<Property[]>([]);
+  const [managers, setManagers] = useState<Manager[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [managerForm, setManagerForm] = useState({
+    name: "",
+    email: "",
+    password: "",
+    password_confirmation: "",
+  });
+  const [propertyForm, setPropertyForm] = useState({
+    name: "",
+    address: "",
+    total_units: "",
+    manager_id: "",
+  });
 
   useEffect(() => {
     if (!user) {
-      navigate("/login");
+      navigate("/login", { replace: true });
+      return;
     }
-  }, [user, navigate]);
+
+    if (user.role !== "admin") {
+      navigate("/login", { replace: true });
+      return;
+    }
+
+    void loadOwnerData();
+  }, [navigate, user]);
+
+  async function loadOwnerData() {
+    setLoading(true);
+    setError("");
+
+    try {
+      const [propertiesRes, managersRes] = await Promise.all([
+        fetch(`${API}/owner/properties`, {
+          credentials: "include",
+          cache: "no-store",
+        }),
+        fetch(`${API}/owner/managers`, {
+          credentials: "include",
+          cache: "no-store",
+        }),
+      ]);
+
+      if (!propertiesRes.ok || !managersRes.ok) {
+        localStorage.removeItem("ts_user");
+        setUser(null);
+        navigate("/login", { replace: true });
+        return;
+      }
+
+      const propertiesData = await parseResponse<{ data?: Property[] }>(
+        propertiesRes
+      );
+      const managersData = await parseResponse<{ data?: Manager[] }>(managersRes);
+
+      setProperties(propertiesData?.data ?? []);
+      setManagers(managersData?.data ?? []);
+    } catch {
+      setError("Owner data could not be loaded.");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function logout() {
     try {
-      await fetch("http://localhost:8000/api/auth/logout", {
+      await fetch(`${API}/auth/logout`, {
         method: "POST",
         credentials: "include",
       });
     } catch {
-      // ignore
+      // ignore network error
     }
 
     localStorage.removeItem("ts_user");
     localStorage.removeItem("ts_token");
     setUser(null);
-    navigate("/login");
+    navigate("/login", { replace: true });
   }
 
-  if (!user) return null;
+  function setSuccess(text: string) {
+    setMessage(text);
+    setError("");
+  }
 
-  const stats = [
-    { title: "Total Apartments", value: "124", change: "+12%" },
-    { title: "Total Tenants", value: "108", change: "+8%" },
-    { title: "Monthly Revenue", value: "580,000 Tk", change: "+5.1%" },
-    { title: "Pending Complaints", value: "12", change: "-3 from last week" },
-  ];
+  function setFailure(text: string) {
+    setError(text);
+    setMessage("");
+  }
 
-  const recentActivities = [
-    { tenant: "Sofia Hasan", apartment: "A-101", action: "Rent Unpaid", amount: "60,000", status: "Pending" },
-    { tenant: "Safwan Arif Naul", apartment: "B-203", action: "Complaint Filed", amount: "-", status: "In Progress" },
-    { tenant: "Faria Islam Usha", apartment: "C-306", action: "Maintenance Request", amount: "-", status: "Pending" },
-    { tenant: "Jawad Al Nasrum Shams", apartment: "D-409", action: "Rent Paid", amount: "20,000", status: "Completed" },
-  ];
+  async function createManager(e: FormEvent) {
+    e.preventDefault();
+    setMessage("");
+    setError("");
 
-  const chartData = [60000, 62000, 65000, 59000, 66000, 57000];
-  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun"];
-  const maxValue = Math.max(...chartData);
+    try {
+      const res = await fetch(`${API}/owner/managers`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(managerForm),
+      });
+
+      const data = await parseResponse<{ message?: string; errors?: unknown }>(res);
+
+      if (!res.ok) {
+        setFailure(data?.message ?? "Manager creation failed.");
+        return;
+      }
+
+      setManagerForm({
+        name: "",
+        email: "",
+        password: "",
+        password_confirmation: "",
+      });
+      setSuccess(data?.message ?? "Manager created successfully.");
+      await loadOwnerData();
+    } catch {
+      setFailure("Network error while creating manager.");
+    }
+  }
+
+  async function createProperty(e: FormEvent) {
+    e.preventDefault();
+    setMessage("");
+    setError("");
+
+    try {
+      const res = await fetch(`${API}/owner/properties`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          ...propertyForm,
+          total_units: Number(propertyForm.total_units),
+          manager_id: propertyForm.manager_id
+            ? Number(propertyForm.manager_id)
+            : null,
+        }),
+      });
+
+      const data = await parseResponse<{ message?: string }>(res);
+
+      if (!res.ok) {
+        setFailure(data?.message ?? "Property creation failed.");
+        return;
+      }
+
+      setPropertyForm({
+        name: "",
+        address: "",
+        total_units: "",
+        manager_id: "",
+      });
+      setSuccess(data?.message ?? "Property created successfully.");
+      await loadOwnerData();
+    } catch {
+      setFailure("Network error while creating property.");
+    }
+  }
+
+  async function removeManager(id: number) {
+    setMessage("");
+    setError("");
+
+    try {
+      const res = await fetch(`${API}/owner/managers/${id}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+
+      const data = await parseResponse<{ message?: string }>(res);
+
+      if (!res.ok) {
+        setFailure(data?.message ?? "Manager removal failed.");
+        return;
+      }
+
+      setSuccess(data?.message ?? "Manager removed successfully.");
+      await loadOwnerData();
+    } catch {
+      setFailure("Network error while removing manager.");
+    }
+  }
+
+  async function removeProperty(id: number) {
+    setMessage("");
+    setError("");
+
+    try {
+      const res = await fetch(`${API}/owner/properties/${id}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+
+      const data = await parseResponse<{ message?: string }>(res);
+
+      if (!res.ok) {
+        setFailure(data?.message ?? "Property deletion failed.");
+        return;
+      }
+
+      setSuccess(data?.message ?? "Property deleted successfully.");
+      await loadOwnerData();
+    } catch {
+      setFailure("Network error while deleting property.");
+    }
+  }
+
+  async function assignManager(propertyId: number, managerId: string) {
+    setMessage("");
+    setError("");
+
+    try {
+      const res = await fetch(`${API}/owner/properties/${propertyId}/manager`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          manager_id: managerId ? Number(managerId) : null,
+        }),
+      });
+
+      const data = await parseResponse<{ message?: string }>(res);
+
+      if (!res.ok) {
+        setFailure(data?.message ?? "Manager assignment failed.");
+        return;
+      }
+
+      setSuccess(data?.message ?? "Manager assignment updated.");
+      await loadOwnerData();
+    } catch {
+      setFailure("Network error while assigning manager.");
+    }
+  }
+
+  if (!user) {
+    return null;
+  }
+
+  const assignedProperties = properties.filter((property) => property.manager).length;
+  const unassignedProperties = properties.length - assignedProperties;
+  const visibleUnits = properties.reduce(
+    (count, property) => count + (property.units?.length ?? 0),
+    0
+  );
 
   return (
     <div style={styles.page}>
-      <aside style={styles.sidebar}>
-        <h2 style={styles.logo}>Dashboard Overview</h2>
+      <div style={styles.hero}>
+        <div>
+          <div style={styles.badge}>Owner Console</div>
+          <h1 style={styles.heroTitle}>Manage properties and managers</h1>
+          <p style={styles.heroText}>
+            Create buildings, create manager accounts, and assign each property
+            to the right manager from one place.
+          </p>
+        </div>
 
-        <nav style={styles.nav}>
-          {[
-            "Dashboard",
-            "Apartments",
-            "Tenants",
-            "Payments",
-            "Reports",
-            "Complaints",
-            "AI Insights",
-            "Settings",
-          ].map((item, i) => (
-            <div
-              key={item}
-              style={{
-                ...styles.navItem,
-                ...(i === 0 ? styles.activeNavItem : {}),
-              }}
-            >
-              {item}
-            </div>
-          ))}
-        </nav>
-      </aside>
+        <div style={styles.userCard}>
+          <div style={styles.userName}>{user.name}</div>
+          <div style={styles.userEmail}>{user.email}</div>
+          <button onClick={logout} style={styles.logoutBtn}>
+            Logout
+          </button>
+        </div>
+      </div>
 
-      <main style={styles.main}>
-        <header style={styles.topbar}>
+      <section style={styles.statsGrid}>
+        <div style={styles.statCard}>
+          <span style={styles.statLabel}>Properties</span>
+          <strong style={styles.statValue}>{properties.length}</strong>
+        </div>
+        <div style={styles.statCard}>
+          <span style={styles.statLabel}>Managers</span>
+          <strong style={styles.statValue}>{managers.length}</strong>
+        </div>
+        <div style={styles.statCard}>
+          <span style={styles.statLabel}>Assigned Properties</span>
+          <strong style={styles.statValue}>{assignedProperties}</strong>
+        </div>
+        <div style={styles.statCard}>
+          <span style={styles.statLabel}>Visible Units</span>
+          <strong style={styles.statValue}>
+            {visibleUnits} / {properties.reduce((sum, item) => sum + item.total_units, 0)}
+          </strong>
+        </div>
+      </section>
+
+      {(message || error) && (
+        <div
+          style={{
+            ...styles.notice,
+            ...(error ? styles.noticeError : styles.noticeSuccess),
+          }}
+        >
+          {error || message}
+        </div>
+      )}
+
+      <section style={styles.formGrid}>
+        <form onSubmit={createProperty} style={styles.panel}>
+          <h2 style={styles.panelTitle}>Create Property</h2>
+          <p style={styles.panelText}>
+            Add a building first, then optionally assign a manager now or later.
+          </p>
+
           <input
-            type="text"
-            placeholder="search apartments, tenants or documents"
-            style={styles.search}
+            style={styles.input}
+            placeholder="Property name"
+            value={propertyForm.name}
+            onChange={(e) =>
+              setPropertyForm((current) => ({ ...current, name: e.target.value }))
+            }
+          />
+          <input
+            style={styles.input}
+            placeholder="Property address"
+            value={propertyForm.address}
+            onChange={(e) =>
+              setPropertyForm((current) => ({
+                ...current,
+                address: e.target.value,
+              }))
+            }
+          />
+          <input
+            style={styles.input}
+            type="number"
+            min="1"
+            placeholder="Total units"
+            value={propertyForm.total_units}
+            onChange={(e) =>
+              setPropertyForm((current) => ({
+                ...current,
+                total_units: e.target.value,
+              }))
+            }
+          />
+          <select
+            style={styles.input}
+            value={propertyForm.manager_id}
+            onChange={(e) =>
+              setPropertyForm((current) => ({
+                ...current,
+                manager_id: e.target.value,
+              }))
+            }
+          >
+            <option value="">Assign manager later</option>
+            {managers.map((manager) => (
+              <option key={manager.id} value={manager.id}>
+                {manager.name}
+              </option>
+            ))}
+          </select>
+
+          <button type="submit" style={styles.primaryBtn}>
+            Save Property
+          </button>
+        </form>
+
+        <form onSubmit={createManager} style={styles.panel}>
+          <h2 style={styles.panelTitle}>Create Manager</h2>
+          <p style={styles.panelText}>
+            The owner creates the manager's email and password for first login.
+          </p>
+
+          <input
+            style={styles.input}
+            placeholder="Manager name"
+            value={managerForm.name}
+            onChange={(e) =>
+              setManagerForm((current) => ({ ...current, name: e.target.value }))
+            }
+          />
+          <input
+            style={styles.input}
+            type="email"
+            placeholder="Manager email"
+            value={managerForm.email}
+            onChange={(e) =>
+              setManagerForm((current) => ({ ...current, email: e.target.value }))
+            }
+          />
+          <input
+            style={styles.input}
+            type="password"
+            placeholder="Password"
+            value={managerForm.password}
+            onChange={(e) =>
+              setManagerForm((current) => ({
+                ...current,
+                password: e.target.value,
+              }))
+            }
+          />
+          <input
+            style={styles.input}
+            type="password"
+            placeholder="Confirm password"
+            value={managerForm.password_confirmation}
+            onChange={(e) =>
+              setManagerForm((current) => ({
+                ...current,
+                password_confirmation: e.target.value,
+              }))
+            }
           />
 
-          <div style={styles.userBox}>
+          <button type="submit" style={styles.primaryBtn}>
+            Save Manager
+          </button>
+        </form>
+      </section>
+
+      <section style={styles.listGrid}>
+        <div style={styles.panel}>
+          <div style={styles.sectionHeader}>
             <div>
-              <div style={styles.userName}>{user.name}</div>
-              <div style={styles.userEmail}>{user.email}</div>
+              <h2 style={styles.panelTitle}>Properties</h2>
+              <p style={styles.panelText}>
+                {unassignedProperties} properties still need a manager assignment.
+              </p>
             </div>
-            <button onClick={logout} style={styles.logoutBtn}>
-              Logout
-            </button>
           </div>
-        </header>
 
-        <section style={styles.statsGrid}>
-          {stats.map((item) => (
-            <div key={item.title} style={styles.card}>
-              <div style={styles.cardTitle}>{item.title}</div>
-              <div style={styles.cardValue}>{item.value}</div>
-              <div style={styles.cardChange}>{item.change}</div>
-            </div>
-          ))}
-        </section>
-
-        <section style={styles.contentGrid}>
-          <div style={styles.chartCard}>
-            <h3 style={styles.sectionTitle}>Monthly Rent Collection</h3>
-            <p style={styles.sectionSub}>Overview of collected vs pending rent</p>
-
-            <div style={styles.chartArea}>
-              {chartData.map((value, index) => {
-                const height = (value / maxValue) * 180;
-                return (
-                  <div key={index} style={styles.barGroup}>
-                    <div
-                      style={{
-                        ...styles.bar,
-                        height: `${height}px`,
-                      }}
-                    />
-                    <span style={styles.barLabel}>{months[index]}</span>
+          {loading ? (
+            <p style={styles.emptyText}>Loading properties...</p>
+          ) : properties.length === 0 ? (
+            <p style={styles.emptyText}>No properties created yet.</p>
+          ) : (
+            <div style={styles.stack}>
+              {properties.map((property) => (
+                <div key={property.id} style={styles.itemCard}>
+                  <div style={styles.itemHeader}>
+                    <div>
+                      <h3 style={styles.itemTitle}>{property.name}</h3>
+                      <p style={styles.itemSub}>{property.address}</p>
+                    </div>
+                    <button
+                      onClick={() => void removeProperty(property.id)}
+                      style={styles.dangerBtn}
+                    >
+                      Delete
+                    </button>
                   </div>
-                );
-              })}
-            </div>
-          </div>
 
-          <div style={styles.aiCard}>
-            <h3 style={{ marginTop: 0 }}>AI Insights</h3>
+                  <div style={styles.metaRow}>
+                    <span style={styles.metaPill}>
+                      Planned units: {property.total_units}
+                    </span>
+                    <span style={styles.metaPill}>
+                      Saved units: {property.units?.length ?? 0}
+                    </span>
+                  </div>
 
-            <div style={styles.insightBox}>
-              <strong>Revenue Optimization</strong>
-              <p style={styles.insightText}>
-                Apartments in Block B can increase rent by 5%.
-              </p>
-            </div>
+                  <div style={styles.assignRow}>
+                    <select
+                      style={styles.inlineSelect}
+                      value={property.manager_id ?? ""}
+                      onChange={(e) =>
+                        void assignManager(property.id, e.target.value)
+                      }
+                    >
+                      <option value="">Unassigned</option>
+                      {managers.map((manager) => (
+                        <option key={manager.id} value={manager.id}>
+                          {manager.name}
+                        </option>
+                      ))}
+                    </select>
 
-            <div style={styles.insightBox}>
-              <strong>Predictive Maintenance</strong>
-              <p style={styles.insightText}>
-                Water line issue may occur in next 7 days.
-              </p>
-            </div>
-
-            <div style={styles.insightBox}>
-              <strong>Tenant Retention</strong>
-              <p style={styles.insightText}>
-                3 tenants may need renewal attention this month.
-              </p>
-            </div>
-
-            <button style={styles.viewBtn}>View All Insights</button>
-          </div>
-        </section>
-
-        <section style={styles.tableCard}>
-          <div style={styles.tableHeader}>
-            <div>
-              <h3 style={styles.sectionTitle}>Recent Activity</h3>
-              <p style={styles.sectionSub}>Latest transactions and updates</p>
-            </div>
-            <a href="#" style={styles.viewAll}>
-              View All
-            </a>
-          </div>
-
-          <table style={styles.table}>
-            <thead>
-              <tr>
-                <th style={styles.th}>Tenant</th>
-                <th style={styles.th}>Apartment</th>
-                <th style={styles.th}>Action</th>
-                <th style={styles.th}>Amount</th>
-                <th style={styles.th}>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recentActivities.map((item, index) => (
-                <tr key={index}>
-                  <td style={styles.td}>{item.tenant}</td>
-                  <td style={styles.td}>{item.apartment}</td>
-                  <td style={styles.td}>{item.action}</td>
-                  <td style={styles.td}>{item.amount}</td>
-                  <td style={styles.td}>{item.status}</td>
-                </tr>
+                    <span style={styles.assignmentText}>
+                      {property.manager
+                        ? `${property.manager.name} is managing this property`
+                        : "No manager assigned yet"}
+                    </span>
+                  </div>
+                </div>
               ))}
-            </tbody>
-          </table>
-        </section>
-      </main>
+            </div>
+          )}
+        </div>
+
+        <div style={styles.panel}>
+          <h2 style={styles.panelTitle}>Managers</h2>
+          <p style={styles.panelText}>
+            Managers created by this owner can later log in and work on assigned
+            properties.
+          </p>
+
+          {loading ? (
+            <p style={styles.emptyText}>Loading managers...</p>
+          ) : managers.length === 0 ? (
+            <p style={styles.emptyText}>No managers created yet.</p>
+          ) : (
+            <div style={styles.stack}>
+              {managers.map((manager) => (
+                <div key={manager.id} style={styles.itemCard}>
+                  <div style={styles.itemHeader}>
+                    <div>
+                      <h3 style={styles.itemTitle}>{manager.name}</h3>
+                      <p style={styles.itemSub}>{manager.email}</p>
+                    </div>
+                    <button
+                      onClick={() => void removeManager(manager.id)}
+                      style={styles.dangerBtn}
+                    >
+                      Remove
+                    </button>
+                  </div>
+
+                  <div style={styles.metaRow}>
+                    <span style={styles.metaPill}>
+                      Assigned properties: {manager.managed_apartments_count ?? 0}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
     </div>
   );
 }
 
-const styles: { [key: string]: React.CSSProperties } = {
+const styles: { [key: string]: CSSProperties } = {
   page: {
-    display: "flex",
     minHeight: "100vh",
-    background: "#f5f7fb",
-    fontFamily: "Arial, sans-serif",
+    background:
+      "linear-gradient(180deg, #f6efe3 0%, #f7f7f4 45%, #eef3f8 100%)",
+    padding: "32px",
+    color: "#1f2933",
+    fontFamily: "Georgia, 'Times New Roman', serif",
   },
-  sidebar: {
-    width: "240px",
-    background: "#ffffff",
-    borderRight: "1px solid #e5e7eb",
-    padding: "24px 18px",
+  hero: {
+    display: "grid",
+    gridTemplateColumns: "2fr 1fr",
+    gap: "20px",
+    marginBottom: "24px",
   },
-  logo: {
-    fontSize: "22px",
-    fontWeight: 700,
-    marginBottom: "32px",
+  badge: {
+    display: "inline-block",
+    padding: "8px 12px",
+    borderRadius: "999px",
+    background: "#113c3a",
+    color: "#f9f3e7",
+    fontSize: "12px",
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    marginBottom: "14px",
   },
-  nav: {
+  heroTitle: {
+    fontSize: "42px",
+    lineHeight: 1.1,
+    margin: "0 0 12px",
+  },
+  heroText: {
+    margin: 0,
+    maxWidth: "640px",
+    fontSize: "18px",
+    lineHeight: 1.6,
+    color: "#52606d",
+  },
+  userCard: {
+    background: "rgba(255,255,255,0.78)",
+    border: "1px solid rgba(17,60,58,0.12)",
+    borderRadius: "24px",
+    padding: "20px",
     display: "flex",
     flexDirection: "column",
-    gap: "10px",
-  },
-  navItem: {
-    padding: "12px 14px",
-    borderRadius: "10px",
-    color: "#374151",
-    cursor: "pointer",
-    fontWeight: 500,
-  },
-  activeNavItem: {
-    background: "#eef2ff",
-    color: "#4f46e5",
-  },
-  main: {
-    flex: 1,
-    padding: "24px",
-  },
-  topbar: {
-    display: "flex",
     justifyContent: "space-between",
-    alignItems: "center",
-    gap: "16px",
-    marginBottom: "24px",
-  },
-  search: {
-    flex: 1,
-    maxWidth: "420px",
-    padding: "12px 14px",
-    borderRadius: "10px",
-    border: "1px solid #d1d5db",
-    outline: "none",
-  },
-  userBox: {
-    display: "flex",
-    alignItems: "center",
-    gap: "12px",
+    boxShadow: "0 18px 40px rgba(31, 41, 51, 0.08)",
   },
   userName: {
-    fontWeight: 700,
-    fontSize: "14px",
-  },
-  userEmail: {
-    fontSize: "12px",
-    color: "#6b7280",
-  },
-  logoutBtn: {
-    padding: "10px 14px",
-    border: "none",
-    borderRadius: "10px",
-    background: "#ef4444",
-    color: "#fff",
-    cursor: "pointer",
-  },
-  statsGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(4, 1fr)",
-    gap: "16px",
-    marginBottom: "24px",
-  },
-  card: {
-    background: "#fff",
-    borderRadius: "16px",
-    padding: "18px",
-    boxShadow: "0 2px 10px rgba(0,0,0,0.05)",
-  },
-  cardTitle: {
-    fontSize: "13px",
-    color: "#6b7280",
-    marginBottom: "8px",
-  },
-  cardValue: {
-    fontSize: "28px",
+    fontSize: "24px",
     fontWeight: 700,
     marginBottom: "6px",
   },
-  cardChange: {
-    fontSize: "13px",
-    color: "#10b981",
+  userEmail: {
+    color: "#52606d",
+    marginBottom: "20px",
   },
-  contentGrid: {
-    display: "grid",
-    gridTemplateColumns: "2fr 1fr",
-    gap: "16px",
-    marginBottom: "24px",
-  },
-  chartCard: {
-    background: "#fff",
-    borderRadius: "16px",
-    padding: "20px",
-    boxShadow: "0 2px 10px rgba(0,0,0,0.05)",
-  },
-  aiCard: {
-    background: "#1d4ed8",
-    color: "#fff",
-    borderRadius: "16px",
-    padding: "20px",
-    boxShadow: "0 2px 10px rgba(0,0,0,0.05)",
-  },
-  sectionTitle: {
-    margin: 0,
-    fontSize: "20px",
+  logoutBtn: {
+    border: "none",
+    borderRadius: "14px",
+    background: "#8f2d1f",
+    color: "#fff8f0",
+    padding: "12px 16px",
+    cursor: "pointer",
     fontWeight: 700,
   },
-  sectionSub: {
-    marginTop: "6px",
+  statsGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+    gap: "16px",
     marginBottom: "20px",
-    color: "#6b7280",
-    fontSize: "13px",
   },
-  chartArea: {
-    height: "240px",
-    display: "flex",
-    alignItems: "flex-end",
-    justifyContent: "space-around",
+  statCard: {
+    background: "rgba(255,255,255,0.78)",
+    borderRadius: "22px",
+    padding: "20px",
+    border: "1px solid rgba(17,60,58,0.1)",
+    boxShadow: "0 12px 28px rgba(31, 41, 51, 0.06)",
+  },
+  statLabel: {
+    display: "block",
+    fontSize: "13px",
+    color: "#7b8794",
+    marginBottom: "8px",
+    textTransform: "uppercase",
+    letterSpacing: "0.06em",
+  },
+  statValue: {
+    fontSize: "28px",
+  },
+  notice: {
+    borderRadius: "16px",
+    padding: "14px 16px",
+    marginBottom: "20px",
+    fontWeight: 600,
+  },
+  noticeSuccess: {
+    background: "#e5f7ef",
+    color: "#0b6b44",
+  },
+  noticeError: {
+    background: "#fce8e6",
+    color: "#b42318",
+  },
+  formGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
     gap: "18px",
-    padding: "20px 10px 10px",
-    border: "1px solid #eef2f7",
-    borderRadius: "12px",
-    background: "#fafbff",
+    marginBottom: "20px",
   },
-  barGroup: {
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "flex-end",
-    gap: "8px",
+  listGrid: {
+    display: "grid",
+    gridTemplateColumns: "1.25fr 0.95fr",
+    gap: "18px",
   },
-  bar: {
-    width: "34px",
-    background: "#8b7cf6",
-    borderRadius: "10px 10px 0 0",
+  panel: {
+    background: "rgba(255,255,255,0.82)",
+    borderRadius: "24px",
+    padding: "22px",
+    border: "1px solid rgba(17,60,58,0.1)",
+    boxShadow: "0 16px 36px rgba(31, 41, 51, 0.07)",
   },
-  barLabel: {
-    fontSize: "12px",
-    color: "#6b7280",
+  panelTitle: {
+    margin: "0 0 8px",
+    fontSize: "28px",
   },
-  insightBox: {
-    background: "rgba(255,255,255,0.12)",
-    borderRadius: "12px",
-    padding: "12px",
-    marginBottom: "12px",
+  panelText: {
+    margin: "0 0 18px",
+    color: "#52606d",
+    lineHeight: 1.6,
   },
-  insightText: {
-    margin: "6px 0 0",
-    fontSize: "13px",
-    lineHeight: 1.5,
-  },
-  viewBtn: {
+  input: {
     width: "100%",
-    marginTop: "8px",
-    padding: "12px",
-    borderRadius: "10px",
+    boxSizing: "border-box",
+    borderRadius: "14px",
+    border: "1px solid #d9e2ec",
+    padding: "13px 14px",
+    fontSize: "15px",
+    marginBottom: "12px",
+    background: "#fffefb",
+  },
+  primaryBtn: {
+    width: "100%",
     border: "none",
-    background: "#ffffff",
-    color: "#1d4ed8",
+    borderRadius: "14px",
+    background: "#113c3a",
+    color: "#f9f3e7",
+    padding: "14px 16px",
     fontWeight: 700,
     cursor: "pointer",
   },
-  tableCard: {
-    background: "#fff",
-    borderRadius: "16px",
-    padding: "20px",
-    boxShadow: "0 2px 10px rgba(0,0,0,0.05)",
-  },
-  tableHeader: {
+  sectionHeader: {
     display: "flex",
-    alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: "16px",
+    alignItems: "center",
+    marginBottom: "8px",
   },
-  viewAll: {
-    color: "#4f46e5",
-    textDecoration: "none",
-    fontWeight: 600,
-    fontSize: "14px",
+  stack: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "14px",
   },
-  table: {
-    width: "100%",
-    borderCollapse: "collapse",
+  itemCard: {
+    borderRadius: "18px",
+    background: "#fffdfa",
+    border: "1px solid #e4e7eb",
+    padding: "16px",
   },
-  th: {
-    textAlign: "left",
-    padding: "12px 10px",
-    borderBottom: "1px solid #e5e7eb",
-    color: "#6b7280",
+  itemHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: "16px",
+    marginBottom: "12px",
+  },
+  itemTitle: {
+    margin: "0 0 4px",
+    fontSize: "21px",
+  },
+  itemSub: {
+    margin: 0,
+    color: "#52606d",
+  },
+  metaRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "10px",
+    marginBottom: "12px",
+  },
+  metaPill: {
+    display: "inline-flex",
+    alignItems: "center",
+    padding: "8px 12px",
+    borderRadius: "999px",
+    background: "#f2f4f7",
+    color: "#344054",
     fontSize: "13px",
+    fontWeight: 600,
   },
-  td: {
-    padding: "14px 10px",
-    borderBottom: "1px solid #f1f5f9",
-    fontSize: "14px",
+  assignRow: {
+    display: "grid",
+    gridTemplateColumns: "220px 1fr",
+    gap: "12px",
+    alignItems: "center",
+  },
+  inlineSelect: {
+    width: "100%",
+    borderRadius: "12px",
+    border: "1px solid #d9e2ec",
+    padding: "10px 12px",
+    background: "#ffffff",
+  },
+  assignmentText: {
+    color: "#52606d",
+    lineHeight: 1.5,
+  },
+  dangerBtn: {
+    alignSelf: "flex-start",
+    border: "none",
+    borderRadius: "12px",
+    background: "#f04438",
+    color: "#ffffff",
+    padding: "10px 12px",
+    cursor: "pointer",
+    fontWeight: 700,
+  },
+  emptyText: {
+    color: "#52606d",
+    margin: "8px 0 0",
   },
 };

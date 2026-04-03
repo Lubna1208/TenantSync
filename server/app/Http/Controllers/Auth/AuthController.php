@@ -23,7 +23,6 @@ class AuthController extends Controller
             'email' => 'required|email|max:255|unique:users,email',
             'date_of_birth' => 'nullable|date',
             'password' => 'required|string|min:6|confirmed',
-            'role' => 'nullable|in:admin,manager,tenant',
         ]);
 
         if ($validator->fails()) {
@@ -38,7 +37,7 @@ class AuthController extends Controller
             'email' => $request->email,
             'date_of_birth' => $request->date_of_birth,
             'password' => Hash::make($request->password),
-            'role' => $request->role ?? 'tenant',
+            'role' => 'tenant',
             'status' => 'active',
         ]);
 

@@ -45,5 +45,7 @@ class Kernel extends HttpKernel
         'throttle' => \Illuminate\Routing\Middleware\ThrottleRequests::class,
         'verified' => \App\Http\Middleware\EnsureEmailIsVerified::class,
         'jwt.cookie' => \App\Http\Middleware\JwtFromCookie::class,
+        'auth.api.user' => \App\Http\Middleware\AuthenticateApiUser::class,
+        'role' => \App\Http\Middleware\EnsureUserRole::class,
     ];
 }
