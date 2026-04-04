@@ -135,7 +135,7 @@ export default function ApartmentTable({
                   style={{
                     textAlign: "center",
                     padding: "20px",
-                    color: "#777",
+                    color: "#aac6dc",
                   }}
                 >
                   No apartments found.
