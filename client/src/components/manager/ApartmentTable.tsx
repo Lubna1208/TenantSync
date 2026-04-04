@@ -36,8 +36,10 @@ export default function ApartmentTable({
       matchesFilter = apartment.status.toLowerCase() === "occupied";
     } else if (activeFilter === "vacant") {
       matchesFilter = apartment.status.toLowerCase() === "vacant";
-    } else if (activeFilter === "leased") {
+    } else if (activeFilter === "leased" || activeFilter === "active") {
       matchesFilter = apartment.leaseStatus.toLowerCase() === "active";
+    } else if (activeFilter === "expired") {
+      matchesFilter = apartment.leaseStatus.toLowerCase() === "expired";
     } else if (activeFilter === "pending") {
       matchesFilter = apartment.leaseStatus.toLowerCase() === "pending";
     }
@@ -67,7 +69,7 @@ export default function ApartmentTable({
   };
 
   return (
-    <div className="dashboard-panel">
+    <div className="dashboard-panel apartment-overview-panel">
       <div className="table-header-row">
         <h3>Apartment Overview</h3>
 
@@ -80,7 +82,7 @@ export default function ApartmentTable({
         />
       </div>
 
-      <div style={{ overflowX: "auto" }}>
+      <div className="table-shell apartment-table-scroll">
         <table className="table">
           <thead>
             <tr>
@@ -113,17 +115,11 @@ export default function ApartmentTable({
                   </td>
                   <td>{apartment.lastPayment}</td>
                   <td>
-                    <div
-                      style={{
-                        display: "flex",
-                        gap: "8px",
-                        flexWrap: "wrap",
-                      }}
-                    >
-                      <button className="action-btn">View</button>
-                      <button className="action-btn">Edit</button>
-                      <button className="action-btn">Notice</button>
-                      <button className="action-btn">Maintenance</button>
+                    <div className="table-action-group">
+                      <button className="table-action-btn">View</button>
+                      <button className="table-action-btn">Edit</button>
+                      <button className="table-action-btn">Notice</button>
+                      <button className="table-action-btn">Maintenance</button>
                     </div>
                   </td>
                 </tr>
