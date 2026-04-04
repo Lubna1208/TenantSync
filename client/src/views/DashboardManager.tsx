@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 
 import ManagerHeader from "../components/manager/ManagerHeader";
@@ -60,6 +60,27 @@ type DashboardResponse = {
   };
 };
 
+type ComplaintItem = {
+  id: number;
+  title: string;
+  description: string;
+  category?: string | null;
+  priority?: string | null;
+  status: "open" | "in_progress" | "resolved";
+  created_at: string;
+  unit?: {
+    id: number;
+    unit_number: string;
+  } | null;
+  tenant?: {
+    id: number;
+    user?: {
+      name: string;
+      email: string;
+    } | null;
+  } | null;
+};
+
 function safeParseUser(raw: string | null): User | null {
   if (!raw) return null;
   if (raw === "undefined" || raw === "null") return null;
@@ -72,6 +93,44 @@ function safeParseUser(raw: string | null): User | null {
   }
 }
 
+function formatDate(value?: string | null) {
+  if (!value) return "Not set";
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+
+  return date.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function formatMonth(value: string) {
+  const [year, month] = value.split("-");
+  const date = new Date(Number(year), Number(month) - 1, 1);
+
+  if (Number.isNaN(date.getTime())) return value;
+
+  return date.toLocaleDateString("en-US", {
+    month: "long",
+    year: "numeric",
+  });
+}
+
+function formatRelative(value: string) {
+  const diff = Date.now() - new Date(value).getTime();
+  const days = Math.max(0, Math.floor(diff / (1000 * 60 * 60 * 24)));
+
+  if (days === 0) return "Today";
+  if (days === 1) return "1 day ago";
+  return `${days} days ago`;
+}
+
+function titleCase(value: string) {
+  return value.split("_").join(" ").replace(/\\b\\w/g, (letter: string) => letter.toUpperCase());
+}
+
 export default function DashboardManager() {
   const navigate = useNavigate();
 
@@ -81,6 +140,7 @@ export default function DashboardManager() {
   const [searchTerm, setSearchTerm] = useState("");
   const [activeFilter, setActiveFilter] = useState("all");
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
+  const [complaints, setComplaints] = useState<ComplaintItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -102,6 +162,18 @@ export default function DashboardManager() {
     lease_end: "",
   });
   const [removeTenantUnitId, setRemoveTenantUnitId] = useState("");
+  const [paymentForm, setPaymentForm] = useState({
+    tenant_id: "",
+    amount: "",
+    payment_month: new Date().toISOString().slice(0, 7),
+    payment_date: new Date().toISOString().slice(0, 10),
+    status: "paid",
+  });
+  const [announcementForm, setAnnouncementForm] = useState({
+    title: "",
+    message: "",
+    target_role: "tenant",
+  });
 
   useEffect(() => {
     if (!user) {
@@ -117,14 +189,21 @@ export default function DashboardManager() {
     setError("");
 
     try {
-      const res = await fetch(`${API}/manager/dashboard`, {
-        credentials: "include",
-        cache: "no-store",
-      });
+      const [dashboardRes, complaintsRes] = await Promise.all([
+        fetch(`${API}/manager/dashboard`, {
+          credentials: "include",
+          cache: "no-store",
+        }),
+        fetch(`${API}/manager/complaints`, {
+          credentials: "include",
+          cache: "no-store",
+        }),
+      ]);
 
-      const data = await res.json().catch(() => null);
+      const dashboardData = await dashboardRes.json().catch(() => null);
+      const complaintsData = await complaintsRes.json().catch(() => null);
 
-      if (res.status === 401) {
+      if (dashboardRes.status === 401 || complaintsRes.status === 401) {
         localStorage.removeItem("ts_user");
         localStorage.removeItem("ts_token");
         sessionStorage.removeItem("ts_user");
@@ -133,15 +212,18 @@ export default function DashboardManager() {
         return;
       }
 
-      if (!res.ok || !data) {
-        setError(data?.message ?? "Manager dashboard could not be loaded.");
+      if (!dashboardRes.ok || !dashboardData) {
+        setError(dashboardData?.message ?? "Manager dashboard could not be loaded.");
         setDashboard(null);
+        setComplaints([]);
         return;
       }
 
-      setDashboard(data.data ?? null);
-      if (data.data === null) {
-        setMessage(data.message ?? "No property is assigned to this manager yet.");
+      setDashboard(dashboardData.data ?? null);
+      setComplaints(complaintsData?.data ?? []);
+
+      if (dashboardData.data === null) {
+        setMessage(dashboardData.message ?? "No property is assigned to this manager yet.");
       }
     } catch {
       setError("Network error while loading manager dashboard.");
@@ -177,7 +259,7 @@ export default function DashboardManager() {
     setMessage("");
   }
 
-  async function createUnit(e: React.FormEvent) {
+  async function createUnit(e: FormEvent) {
     e.preventDefault();
     setMessage("");
     setError("");
@@ -213,7 +295,7 @@ export default function DashboardManager() {
     }
   }
 
-  async function assignTenant(e: React.FormEvent) {
+  async function assignTenant(e: FormEvent) {
     e.preventDefault();
     setMessage("");
     setError("");
@@ -275,13 +357,10 @@ export default function DashboardManager() {
     }
 
     try {
-      const res = await fetch(
-        `${API}/manager/units/${removeTenantUnitId}/tenant`,
-        {
-          method: "DELETE",
-          credentials: "include",
-        }
-      );
+      const res = await fetch(`${API}/manager/units/${removeTenantUnitId}/tenant`, {
+        method: "DELETE",
+        credentials: "include",
+      });
 
       const data = await res.json().catch(() => null);
 
@@ -298,10 +377,131 @@ export default function DashboardManager() {
     }
   }
 
-  if (!user) return null;
+  async function updateComplaintStatus(id: number, status: string) {
+    setMessage("");
+    setError("");
+
+    try {
+      const res = await fetch(`${API}/manager/complaints/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ status }),
+      });
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        setFailure(data?.message ?? "Complaint update failed.");
+        return;
+      }
+
+      setSuccess(data?.message ?? "Complaint updated successfully.");
+      await loadDashboard();
+    } catch {
+      setFailure("Network error while updating complaint.");
+    }
+  }
+
+  async function savePayment(e: FormEvent) {
+    e.preventDefault();
+    setMessage("");
+    setError("");
+
+    if (!paymentForm.tenant_id) {
+      setFailure("Choose a tenant before saving a payment.");
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API}/manager/rent-payments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          tenant_id: Number(paymentForm.tenant_id),
+          amount: Number(paymentForm.amount),
+          payment_month: paymentForm.payment_month,
+          payment_date: paymentForm.payment_date || null,
+          status: paymentForm.status,
+        }),
+      });
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        setFailure(data?.message ?? "Rent payment could not be saved.");
+        return;
+      }
+
+      setPaymentForm((current) => ({
+        ...current,
+        tenant_id: "",
+        amount: "",
+      }));
+      setSuccess(data?.message ?? "Rent payment saved successfully.");
+    } catch {
+      setFailure("Network error while saving rent payment.");
+    }
+  }
+
+  async function publishAnnouncement(e: FormEvent) {
+    e.preventDefault();
+    setMessage("");
+    setError("");
+
+    try {
+      const res = await fetch(`${API}/manager/announcements`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(announcementForm),
+      });
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        setFailure(data?.message ?? "Announcement could not be published.");
+        return;
+      }
+
+      setAnnouncementForm({
+        title: "",
+        message: "",
+        target_role: "tenant",
+      });
+      setSuccess(data?.message ?? "Announcement published successfully.");
+    } catch {
+      setFailure("Network error while publishing announcement.");
+    }
+  }
 
   const property = dashboard?.property ?? null;
   const units = property?.units ?? [];
+  const tenants = useMemo(
+    () =>
+      units
+        .map((unit) => {
+          const activeTenant = unit.tenants?.find((tenant) => tenant.unit_id !== null);
+
+          if (!activeTenant?.user) {
+            return null;
+          }
+
+          return {
+            tenantId: activeTenant.id,
+            unitId: unit.id,
+            unitNumber: unit.unit_number,
+            name: activeTenant.user.name,
+            email: activeTenant.user.email,
+            rentAmount: Number(unit.rent_amount ?? 0),
+          };
+        })
+        .filter((value): value is NonNullable<typeof value> => value !== null),
+    [units]
+  );
+
+  if (!user) return null;
 
   const statsData = [
     {
@@ -349,7 +549,11 @@ export default function DashboardManager() {
           ? "Active"
           : "Pending"
         : "Expired",
-      lastPayment: property?.name ?? "Assigned Property",
+      lastPayment: hasTenant
+        ? activeTenant?.lease_start
+          ? `Lease ${formatDate(activeTenant.lease_start)}`
+          : "Tenant assigned"
+        : "No tenant",
     };
   });
 
@@ -364,17 +568,15 @@ export default function DashboardManager() {
     },
     {
       id: 2,
-      label: "Unit Capacity",
-      description: `${dashboard?.summary.units_created ?? 0} of ${
-        dashboard?.summary.unit_limit ?? 0
-      } units added`,
-      icon: "Plan",
+      label: "Active Tenants",
+      description: `${tenants.length} tenant accounts currently assigned`,
+      icon: "People",
     },
     {
       id: 3,
-      label: "Vacancy Status",
-      description: `${dashboard?.summary.vacant_units ?? 0} units are still vacant`,
-      icon: "Status",
+      label: "Open Complaints",
+      description: `${complaints.filter((item) => item.status !== "resolved").length} items need attention`,
+      icon: "Alert",
     },
   ];
 
@@ -406,13 +608,77 @@ export default function DashboardManager() {
         </div>
 
         <div className="dashboard-main-grid">
-          <div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
             <ApartmentTable
               apartments={apartments}
               searchTerm={searchTerm}
               activeFilter={activeFilter}
               setSearchTerm={setSearchTerm}
             />
+
+            <div className="dashboard-panel">
+              <div className="table-header-row">
+                <h3>Tenant Complaints</h3>
+                <span style={{ color: "#666", fontSize: "13px", fontWeight: 600 }}>
+                  {complaints.length} complaint{complaints.length === 1 ? "" : "s"}
+                </span>
+              </div>
+
+              {loading ? (
+                <p className="empty-text">Loading complaints...</p>
+              ) : complaints.length === 0 ? (
+                <p className="empty-text">No complaints submitted in this property.</p>
+              ) : (
+                <div className="complaints-list">
+                  {complaints.map((complaint) => (
+                    <div key={complaint.id} className="complaint-item">
+                      <div className="complaint-top">
+                        <div>
+                          <h4>{complaint.title}</h4>
+                          <p>
+                            Unit {complaint.unit?.unit_number ?? "-"} • {complaint.tenant?.user?.name ?? "Tenant"}
+                          </p>
+                        </div>
+                        <span className={`priority-badge ${(complaint.priority ?? "medium").toLowerCase()}`}>
+                          {titleCase(complaint.priority ?? "medium")}
+                        </span>
+                      </div>
+
+                      <p>{complaint.description}</p>
+                      <p>
+                        Category: {complaint.category || "General"} • Submitted {formatRelative(complaint.created_at)}
+                      </p>
+
+                      <div
+                        style={{
+                          marginTop: "12px",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          gap: "12px",
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <span className={`status-badge ${complaint.status === "resolved" ? "resolved" : complaint.status === "in_progress" ? "in-progress" : "pending"}`}>
+                          {titleCase(complaint.status)}
+                        </span>
+
+                        <select
+                          className="manager-input"
+                          style={{ width: "180px", maxWidth: "100%" }}
+                          value={complaint.status}
+                          onChange={(e) => void updateComplaintStatus(complaint.id, e.target.value)}
+                        >
+                          <option value="open">Open</option>
+                          <option value="in_progress">In Progress</option>
+                          <option value="resolved">Resolved</option>
+                        </select>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="dashboard-right-column">
@@ -426,17 +692,11 @@ export default function DashboardManager() {
                     <strong>{property.name}</strong>
                   </p>
                   <p>{property.address}</p>
-                  <p>
-                    Unit limit: {dashboard?.summary.unit_limit ?? 0}
-                  </p>
-                  <p>
-                    Added units: {dashboard?.summary.units_created ?? 0}
-                  </p>
+                  <p>Unit limit: {dashboard?.summary.unit_limit ?? 0}</p>
+                  <p>Added units: {dashboard?.summary.units_created ?? 0}</p>
                 </div>
               ) : (
-                <p className="empty-text">
-                  No property assigned by the owner yet.
-                </p>
+                <p className="empty-text">No property assigned by the owner yet.</p>
               )}
             </div>
 
@@ -560,6 +820,17 @@ export default function DashboardManager() {
               <input
                 className="manager-input"
                 type="date"
+                value={tenantForm.move_in_date}
+                onChange={(e) =>
+                  setTenantForm((current) => ({
+                    ...current,
+                    move_in_date: e.target.value,
+                  }))
+                }
+              />
+              <input
+                className="manager-input"
+                type="date"
                 value={tenantForm.lease_start}
                 onChange={(e) =>
                   setTenantForm((current) => ({
@@ -608,9 +879,168 @@ export default function DashboardManager() {
                 Delete Tenant Login
               </button>
             </div>
+
+            <form className="dashboard-panel manager-form" onSubmit={savePayment}>
+              <h3>Record Rent Payment</h3>
+              <select
+                className="manager-input"
+                value={paymentForm.tenant_id}
+                onChange={(e) => {
+                  const selectedTenant = tenants.find(
+                    (item) => String(item.tenantId) === e.target.value
+                  );
+
+                  setPaymentForm((current) => ({
+                    ...current,
+                    tenant_id: e.target.value,
+                    amount: selectedTenant ? String(selectedTenant.rentAmount) : current.amount,
+                  }));
+                }}
+              >
+                <option value="">Choose tenant</option>
+                {tenants.map((tenant) => (
+                  <option key={tenant.tenantId} value={tenant.tenantId}>
+                    {tenant.name} - Unit {tenant.unitNumber}
+                  </option>
+                ))}
+              </select>
+              <input
+                className="manager-input"
+                type="month"
+                value={paymentForm.payment_month}
+                onChange={(e) =>
+                  setPaymentForm((current) => ({
+                    ...current,
+                    payment_month: e.target.value,
+                  }))
+                }
+              />
+              <input
+                className="manager-input"
+                type="number"
+                min="0"
+                placeholder="Amount"
+                value={paymentForm.amount}
+                onChange={(e) =>
+                  setPaymentForm((current) => ({
+                    ...current,
+                    amount: e.target.value,
+                  }))
+                }
+              />
+              <input
+                className="manager-input"
+                type="date"
+                value={paymentForm.payment_date}
+                onChange={(e) =>
+                  setPaymentForm((current) => ({
+                    ...current,
+                    payment_date: e.target.value,
+                  }))
+                }
+              />
+              <select
+                className="manager-input"
+                value={paymentForm.status}
+                onChange={(e) =>
+                  setPaymentForm((current) => ({
+                    ...current,
+                    status: e.target.value,
+                  }))
+                }
+              >
+                <option value="paid">Paid</option>
+                <option value="pending">Pending</option>
+                <option value="unpaid">Unpaid</option>
+              </select>
+              <button className="action-btn" type="submit" disabled={!property}>
+                Save Payment
+              </button>
+            </form>
+
+            <form className="dashboard-panel manager-form" onSubmit={publishAnnouncement}>
+              <h3>Publish Announcement</h3>
+              <input
+                className="manager-input"
+                placeholder="Announcement title"
+                value={announcementForm.title}
+                onChange={(e) =>
+                  setAnnouncementForm((current) => ({
+                    ...current,
+                    title: e.target.value,
+                  }))
+                }
+              />
+              <textarea
+                className="manager-input"
+                style={{ minHeight: "110px", resize: "vertical", fontFamily: "inherit" }}
+                placeholder="Write the update for tenants"
+                value={announcementForm.message}
+                onChange={(e) =>
+                  setAnnouncementForm((current) => ({
+                    ...current,
+                    message: e.target.value,
+                  }))
+                }
+              />
+              <select
+                className="manager-input"
+                value={announcementForm.target_role}
+                onChange={(e) =>
+                  setAnnouncementForm((current) => ({
+                    ...current,
+                    target_role: e.target.value,
+                  }))
+                }
+              >
+                <option value="tenant">Tenant only</option>
+                <option value="all">Everyone</option>
+                <option value="manager">Manager only</option>
+              </select>
+              <button className="action-btn" type="submit" disabled={!property}>
+                Publish Notice
+              </button>
+            </form>
+          </div>
+        </div>
+
+        <div className="dashboard-footer-actions">
+          <div
+            className="dashboard-panel"
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+              gap: "16px",
+            }}
+          >
+            <div>
+              <strong style={{ display: "block", fontSize: "20px", marginBottom: "4px" }}>{tenants.length}</strong>
+              <p style={{ margin: 0, color: "#666", fontSize: "13px" }}>Active tenants</p>
+            </div>
+            <div>
+              <strong style={{ display: "block", fontSize: "20px", marginBottom: "4px" }}>{complaints.filter((item) => item.status === "open").length}</strong>
+              <p style={{ margin: 0, color: "#666", fontSize: "13px" }}>Open complaints</p>
+            </div>
+            <div>
+              <strong style={{ display: "block", fontSize: "20px", marginBottom: "4px" }}>{paymentForm.payment_month ? formatMonth(paymentForm.payment_month) : "This month"}</strong>
+              <p style={{ margin: 0, color: "#666", fontSize: "13px" }}>Current rent cycle</p>
+            </div>
+            <div>
+              <strong style={{ display: "block", fontSize: "20px", marginBottom: "4px" }}>{property ? formatDate(new Date().toISOString()) : "Waiting"}</strong>
+              <p style={{ margin: 0, color: "#666", fontSize: "13px" }}>Last dashboard refresh</p>
+            </div>
           </div>
         </div>
       </div>
     </div>
   );
 }
+
+
+
+
+
+
+
+
+

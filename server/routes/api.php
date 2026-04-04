@@ -38,6 +38,16 @@ Route::middleware(['jwt.cookie', 'auth.api.user'])->group(function () {
         Route::post('/units/{id}/assign-tenant', [ManagerController::class, 'assignTenant']);
         Route::patch('/units/{id}/vacate', [ManagerController::class, 'vacateUnit']);
         Route::delete('/units/{id}/tenant', [ManagerController::class, 'removeTenant']);
+        Route::get('/complaints', [ManagerController::class, 'complaints']);
+        Route::patch('/complaints/{id}', [ManagerController::class, 'updateComplaint']);
+        Route::post('/rent-payments', [ManagerController::class, 'storeRentPayment']);
+        Route::post('/announcements', [ManagerController::class, 'storeAnnouncement']);
+    });
+
+    Route::middleware('role:tenant')->prefix('tenant')->group(function () {
+        Route::get('/dashboard', [TenantController::class, 'dashboard']);
+        Route::post('/complaints', [TenantController::class, 'storeComplaint']);
+        Route::post('/rent-payments', [TenantController::class, 'storeRentPayment']);
     });
 
     Route::apiResource('tenants', TenantController::class);
