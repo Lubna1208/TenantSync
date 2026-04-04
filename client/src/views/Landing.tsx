@@ -7,7 +7,10 @@ const API = "http://localhost:8000/api";
 
 type User = {
   id: number;
+  name?: string;
+  email?: string;
   role?: "admin" | "manager" | "tenant" | string;
+  status?: string;
 };
 
 function safeParseUser(raw: string | null): User | null {
@@ -32,6 +35,15 @@ function getDashboardPath(role?: string) {
     default:
       return "/login";
   }
+}
+
+function isUser(value: unknown): value is User {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      "id" in value &&
+      typeof (value as { id?: unknown }).id === "number"
+  );
 }
 
 export default function Landing() {
@@ -95,16 +107,38 @@ export default function Landing() {
         return;
       }
 
-      if (!data?.user) {
+      let user: User | null = isUser(data?.user)
+        ? data.user
+        : isUser(data)
+          ? data
+          : null;
+
+      if (!user) {
+        const meRes = await fetch(`${API}/auth/me`, {
+          method: "GET",
+          credentials: "include",
+          cache: "no-store",
+        });
+
+        if (meRes.ok) {
+          const meData = await meRes.json().catch(() => null);
+          user = isUser(meData?.user) ? meData.user : isUser(meData) ? meData : null;
+        }
+      }
+
+      if (!user) {
         setMsg("Login succeeded but no user returned.");
         return;
       }
 
-      localStorage.setItem("ts_user", JSON.stringify(data.user));
+      localStorage.setItem("ts_user", JSON.stringify(user));
+      if (typeof data?.token === "string" && data.token) {
+        localStorage.setItem("ts_token", data.token);
+      }
       sessionStorage.removeItem("ts_user");
       setEmail("");
       setPassword("");
-      navigate(getDashboardPath(data.user.role), { replace: true });
+      navigate(getDashboardPath(user.role), { replace: true });
     } catch {
       setMsg("Network error: backend is not reachable.");
     } finally {

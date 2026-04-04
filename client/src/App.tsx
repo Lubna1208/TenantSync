@@ -91,13 +91,30 @@ export default function App() {
 
         if (!user?.id) {
           localStorage.removeItem("ts_user");
+          localStorage.removeItem("ts_token");
           sessionStorage.removeItem("ts_user");
           return;
         }
 
         localStorage.setItem("ts_user", JSON.stringify(user));
+
+        if (!localStorage.getItem("ts_token")) {
+          const refreshRes = await fetch(`${API}/auth/refresh`, {
+            method: "POST",
+            credentials: "include",
+          });
+
+          if (refreshRes.ok) {
+            const refreshData = await refreshRes.json().catch(() => null);
+
+            if (typeof refreshData?.token === "string" && refreshData.token) {
+              localStorage.setItem("ts_token", refreshData.token);
+            }
+          }
+        }
       } catch {
         localStorage.removeItem("ts_user");
+        localStorage.removeItem("ts_token");
         sessionStorage.removeItem("ts_user");
       } finally {
         setAuthChecked(true);

@@ -19,6 +19,7 @@ Route::post('/auth/logout', [AuthController::class, 'logout'])->middleware(['jwt
 Route::middleware(['jwt.cookie', 'auth.api.user'])->group(function () {
     Route::get('/auth/me', [AuthController::class, 'me']);
     Route::post('/auth/refresh', [AuthController::class, 'refresh']);
+    Route::post('/auth/change-password', [AuthController::class, 'changePassword']);
 
     Route::middleware('role:admin')->prefix('owner')->group(function () {
         Route::get('/managers', [OwnerController::class, 'managers']);
