@@ -29,7 +29,7 @@ export default function StatsCards({
             onClick={() => onCardClick(item.id)}
             style={{
               cursor: "pointer",
-              border: isActive ? "2px solid #2c3e50" : "2px solid transparent",
+              border: isActive ? "2px solid #12b7ff" : "2px solid transparent",
               transition: "0.2s ease",
             }}
           >
@@ -46,7 +46,7 @@ export default function StatsCards({
                   style={{
                     margin: "0 0 6px 0",
                     fontSize: "14px",
-                    color: "#666",
+                    color: "#aac6dc",
                   }}
                 >
                   {item.label}
@@ -66,7 +66,7 @@ export default function StatsCards({
                   style={{
                     margin: 0,
                     fontSize: "12px",
-                    color: "#888",
+                    color: "#9cb8d0",
                   }}
                 >
                   {item.note || "No additional note"}

@@ -1,398 +1,347 @@
-import { Link } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Navigate, useLocation, useNavigate } from "react-router-dom";
+import "./Landing.css";
+import logo from "../assets/logo.png";
+
+const API = "http://localhost:8000/api";
+
+type User = {
+  id: number;
+  role?: "admin" | "manager" | "tenant" | string;
+};
+
+function safeParseUser(raw: string | null): User | null {
+  if (!raw || raw === "undefined" || raw === "null") return null;
+
+  try {
+    return JSON.parse(raw) as User;
+  } catch {
+    localStorage.removeItem("ts_user");
+    return null;
+  }
+}
+
+function getDashboardPath(role?: string) {
+  switch (role) {
+    case "admin":
+      return "/dashboard";
+    case "manager":
+      return "/dashboard-manager";
+    case "tenant":
+      return "/dashboard-tenant";
+    default:
+      return "/login";
+  }
+}
 
 export default function Landing() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const isLoginRoute = location.pathname === "/login";
+  const currentUser = safeParseUser(localStorage.getItem("ts_user"));
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [msg, setMsg] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [loginActive, setLoginActive] = useState(isLoginRoute);
+  const skylineBuildings = [
+    "tower-1",
+    "tower-2",
+    "tower-3",
+    "tower-4",
+    "tower-5",
+    "tower-6",
+    "tower-7",
+    "tower-8",
+    "tower-9",
+    "tower-10",
+    "tower-11",
+    "tower-12",
+    "tower-13",
+    "tower-14",
+  ];
+
+  useEffect(() => {
+    setMsg("");
+    setLoginActive(isLoginRoute);
+  }, [isLoginRoute]);
+
+  function transitionTo(path: "/" | "/login") {
+    if (path === location.pathname) return;
+    navigate(path, { replace: false });
+  }
+
+  if (isLoginRoute && currentUser) {
+    return <Navigate to={getDashboardPath(currentUser.role)} replace />;
+  }
+
+  async function submitLogin(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setMsg("");
+    setIsSubmitting(true);
+
+    try {
+      const res = await fetch(`${API}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ email, password }),
+      });
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        setMsg(data?.message ?? `Login failed (HTTP ${res.status})`);
+        return;
+      }
+
+      if (!data?.user) {
+        setMsg("Login succeeded but no user returned.");
+        return;
+      }
+
+      localStorage.setItem("ts_user", JSON.stringify(data.user));
+      sessionStorage.removeItem("ts_user");
+      setEmail("");
+      setPassword("");
+      navigate(getDashboardPath(data.user.role), { replace: true });
+    } catch {
+      setMsg("Network error: backend is not reachable.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background:
-          "linear-gradient(135deg, #eef4ff 0%, #f8fbff 45%, #ffffff 100%)",
-        fontFamily: "Arial, sans-serif",
-        color: "#1f2937",
-      }}
-    >
-      <header
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          padding: "24px 56px",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div
-            style={{
-              width: 44,
-              height: 44,
-              borderRadius: 12,
-              background: "linear-gradient(135deg, #4f46e5, #06b6d4)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "#fff",
-              fontWeight: 700,
-              fontSize: 18,
-              boxShadow: "0 10px 24px rgba(79,70,229,0.25)",
-            }}
-          >
-            T
-          </div>
-          <div>
-            <h2 style={{ margin: 0, fontSize: 24, fontWeight: 800 }}>
-              TenantSync
-            </h2>
-            <p style={{ margin: "4px 0 0", fontSize: 13, color: "#6b7280" }}>
-              Smart apartment and tenant management
-            </p>
-          </div>
+    <div className="landing-page">
+
+      {/* Navbar */}
+      <header className="navbar">
+        <div className="logo-section">
+          <img src={logo} alt="logo" />
+          <h2>TenantSync</h2>
         </div>
 
-        <div style={{ display: "flex", gap: 12 }}>
-          <Link to="/login" style={{ textDecoration: "none" }}>
-            <button
-              style={{
-                padding: "12px 20px",
-                borderRadius: 12,
-                border: "1px solid #c7d2fe",
-                background: "#ffffff",
-                color: "#4338ca",
-                fontWeight: 700,
-                cursor: "pointer",
-                boxShadow: "0 6px 16px rgba(0,0,0,0.05)",
-              }}
-            >
-              Login
-            </button>
-          </Link>
+        <nav className="nav-links"></nav>
 
-          <Link to="/register" style={{ textDecoration: "none" }}>
-            <button
-              style={{
-                padding: "12px 20px",
-                borderRadius: 12,
-                border: "none",
-                background: "linear-gradient(135deg, #4f46e5, #7c3aed)",
-                color: "#ffffff",
-                fontWeight: 700,
-                cursor: "pointer",
-                boxShadow: "0 10px 24px rgba(79,70,229,0.28)",
-              }}
-            >
-              Register
-            </button>
-          </Link>
+        <div className="auth-buttons">
+          <button
+            className={`login-btn ${!loginActive ? "is-current" : ""}`}
+            onClick={() => transitionTo("/")}
+          >
+            Home
+          </button>
+          <button
+            className={`register-btn ${loginActive ? "is-current" : ""}`}
+            onClick={() => transitionTo("/login")}
+          >
+            Login
+          </button>
         </div>
       </header>
 
-      <main
-        style={{
-          maxWidth: 1250,
-          margin: "0 auto",
-          padding: "30px 56px 70px",
-          display: "grid",
-          gridTemplateColumns: "1.15fr 0.85fr",
-          gap: 36,
-          alignItems: "center",
-        }}
-      >
-        <section>
-          <div
-            style={{
-              display: "inline-block",
-              padding: "8px 14px",
-              borderRadius: 999,
-              background: "#e0e7ff",
-              color: "#4338ca",
-              fontWeight: 700,
-              fontSize: 13,
-              marginBottom: 20,
-            }}
-          >
-            Welcome to TenantSync
-          </div>
+      {/* Hero Section */}
+      <section className="hero-section">
+        <div className={`hero-left ${loginActive ? "hero-left--login-focus" : ""}`}>
+          <span className="hero-badge">
+            {loginActive ? "Secure Member Access" : "Smart Property Management"}
+          </span>
 
-          <h1
-            style={{
-              fontSize: 56,
-              lineHeight: 1.08,
-              margin: "0 0 18px",
-              fontWeight: 900,
-              color: "#111827",
-            }}
-          >
-            Manage apartments,
-            <br />
-            tenants, payments
-            <br />
-            and communication
-            <span style={{ color: "#4f46e5" }}> with confidence.</span>
+          <h1>
+            {loginActive ? (
+              <>
+                Sign In and Continue Your <span>TenantSync</span> Workflow
+              </>
+            ) : (
+              <>
+                Manage Apartments, <span>Tenants</span>, and Operations in One
+                Place
+              </>
+            )}
           </h1>
 
-          <p
-            style={{
-              fontSize: 18,
-              lineHeight: 1.8,
-              color: "#4b5563",
-              maxWidth: 760,
-              marginBottom: 28,
-            }}
-          >
-            TenantSync is a clean and powerful platform designed to make apartment
-            management easier, smarter, and more organized for admins, managers,
-            and tenants.
+          <p>
+            {loginActive
+              ? "Your login now appears directly inside the home experience, so the transition feels smoother, smarter, and much more modern."
+              : "TenantSync simplifies apartment management for admins, managers, and tenants with role-based dashboards, complaint tracking, secure records, and smooth communication."}
           </p>
 
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-              gap: 16,
-              marginBottom: 30,
-            }}
-          >
-            <div
-              style={{
-                background: "#ffffff",
-                borderRadius: 18,
-                padding: 20,
-                boxShadow: "0 10px 28px rgba(0,0,0,0.06)",
-                border: "1px solid #eef2ff",
-              }}
+          <div className="hero-buttons">
+            <button
+              className="primary-btn"
+              onClick={() => transitionTo(loginActive ? "/" : "/login")}
             >
-              <h3
-                style={{
-                  margin: "0 0 10px",
-                  color: "#2563eb",
-                  fontSize: 20,
-                  fontWeight: 800,
-                }}
-              >
-                Shams
-              </h3>
-              <p
-                style={{
-                  margin: 0,
-                  color: "#4b5563",
-                  lineHeight: 1.7,
-                  fontSize: 15,
-                }}
-              >
-                Shams is a very good boy with a sincere mind, strong dedication,
-                and a respectful attitude. He brings positivity, effort, and
-                reliability into everything he does.
-              </p>
-            </div>
-
-            <div
-              style={{
-                background: "#ffffff",
-                borderRadius: 18,
-                padding: 20,
-                boxShadow: "0 10px 28px rgba(0,0,0,0.06)",
-                border: "1px solid #eef2ff",
-              }}
-            >
-              <h3
-                style={{
-                  margin: "0 0 10px",
-                  color: "#7c3aed",
-                  fontSize: 20,
-                  fontWeight: 800,
-                }}
-              >
-                Lubna
-              </h3>
-              <p
-                style={{
-                  margin: 0,
-                  color: "#4b5563",
-                  lineHeight: 1.7,
-                  fontSize: 15,
-                }}
-              >
-                Lubna is warm, kind, and supportive. She has a bright presence and
-                a caring personality, and she is known as Nabil&apos;s bestie,
-                making every team or friendship circle feel more cheerful.
-              </p>
-            </div>
-
-            <div
-              style={{
-                background: "#ffffff",
-                borderRadius: 18,
-                padding: 20,
-                boxShadow: "0 10px 28px rgba(0,0,0,0.06)",
-                border: "1px solid #eef2ff",
-              }}
-            >
-              <h3
-                style={{
-                  margin: "0 0 10px",
-                  color: "#059669",
-                  fontSize: 20,
-                  fontWeight: 800,
-                }}
-              >
-                Nabil
-              </h3>
-              <p
-                style={{
-                  margin: 0,
-                  color: "#4b5563",
-                  lineHeight: 1.7,
-                  fontSize: 15,
-                }}
-              >
-                Nabil is thoughtful, dependable, and intelligent. He values strong
-                friendships, works with focus, and stands out as someone people
-                can trust and appreciate.
-              </p>
-            </div>
+              {loginActive ? "Back to Home" : "Get Started"}
+            </button>
           </div>
 
-          <div style={{ display: "flex", gap: 14 }}>
-            <Link to="/register" style={{ textDecoration: "none" }}>
-              <button
-                style={{
-                  padding: "14px 24px",
-                  borderRadius: 14,
-                  border: "none",
-                  background: "linear-gradient(135deg, #4f46e5, #7c3aed)",
-                  color: "#fff",
-                  fontWeight: 800,
-                  fontSize: 15,
-                  cursor: "pointer",
-                  boxShadow: "0 12px 28px rgba(79,70,229,0.25)",
-                }}
-              >
-                Get Started
-              </button>
-            </Link>
-
-            <Link to="/login" style={{ textDecoration: "none" }}>
-              <button
-                style={{
-                  padding: "14px 24px",
-                  borderRadius: 14,
-                  border: "1px solid #dbe4ff",
-                  background: "#fff",
-                  color: "#374151",
-                  fontWeight: 700,
-                  fontSize: 15,
-                  cursor: "pointer",
-                }}
-              >
-                Sign In
-              </button>
-            </Link>
+          <div className="hero-stats">
+            <div className="stat-box">
+              <h3>3+</h3>
+              <p>User Roles</p>
+            </div>
+            <div className="stat-box">
+              <h3>24/7</h3>
+              <p>Complaint Tracking</p>
+            </div>
+            <div className="stat-box">
+              <h3>100%</h3>
+              <p>Secure Access</p>
+            </div>
           </div>
-        </section>
+        </div>
 
-        <section>
-          <div
-            style={{
-              background: "#ffffff",
-              borderRadius: 28,
-              padding: 28,
-              boxShadow: "0 20px 48px rgba(15,23,42,0.10)",
-              border: "1px solid #eef2ff",
-            }}
-          >
+        <div className={`hero-right ${loginActive ? "hero-right--login" : ""}`}>
+          <div className="image-overlay"></div>
+
+          <div className="hero-visual-stage">
             <div
-              style={{
-                background: "linear-gradient(135deg, #4338ca, #06b6d4)",
-                borderRadius: 22,
-                padding: 24,
-                color: "#fff",
-                marginBottom: 20,
-              }}
+              className={`skyline-scene-wrapper ${
+                loginActive ? "skyline-scene-wrapper--hidden" : ""
+              }`}
+              aria-hidden={loginActive}
             >
-              <p
-                style={{
-                  margin: "0 0 10px",
-                  fontSize: 13,
-                  opacity: 0.9,
-                  letterSpacing: 1,
-                  textTransform: "uppercase",
-                }}
-              >
-                Platform Highlights
-              </p>
-              <h3 style={{ margin: 0, fontSize: 28, fontWeight: 800 }}>
-                Everything you need in one dashboard
-              </h3>
-              <p
-                style={{
-                  margin: "12px 0 0",
-                  lineHeight: 1.7,
-                  fontSize: 15,
-                  opacity: 0.95,
-                }}
-              >
-                Track rent, handle complaints, view tenant activities, and manage
-                apartment operations in a simple and organized way.
-              </p>
+              <div className="skyline-scene">
+                <div className="skyline-glow"></div>
+                <div className="skyline-mist"></div>
+                <div className="skyline-row">
+                  {skylineBuildings.map((building) => (
+                    <span
+                      key={building}
+                      className={`skyline-tower ${building}`}
+                    ></span>
+                  ))}
+                </div>
+                <div className="waterline"></div>
+                <div className="skyline-reflection">
+                  {skylineBuildings.map((building) => (
+                    <span
+                      key={`reflection-${building}`}
+                      className={`skyline-tower reflection ${building}`}
+                    ></span>
+                  ))}
+                </div>
+              </div>
             </div>
 
             <div
-              style={{
-                display: "grid",
-                gap: 14,
-              }}
+              className={`hero-login-shell ${
+                loginActive ? "hero-login-shell--visible" : ""
+              }`}
             >
-              {[
-                {
-                  title: "Tenant Management",
-                  text: "Keep tenant information, apartment details, and records organized.",
-                },
-                {
-                  title: "Payment Tracking",
-                  text: "Monitor rent status, monthly payments, and due information easily.",
-                },
-                {
-                  title: "Complaint Handling",
-                  text: "View issues quickly and manage maintenance in a streamlined flow.",
-                },
-                {
-                  title: "AI Support",
-                  text: "Use AI-powered insights and assistance for better decisions.",
-                },
-              ].map((item) => (
-                <div
-                  key={item.title}
-                  style={{
-                    background: "#f8fbff",
-                    border: "1px solid #e6eeff",
-                    borderRadius: 18,
-                    padding: 18,
-                  }}
-                >
-                  <h4
-                    style={{
-                      margin: "0 0 8px",
-                      fontSize: 17,
-                      fontWeight: 800,
-                      color: "#1f2937",
-                    }}
-                  >
-                    {item.title}
-                  </h4>
-                  <p
-                    style={{
-                      margin: 0,
-                      color: "#6b7280",
-                      lineHeight: 1.7,
-                      fontSize: 14,
-                    }}
-                  >
-                    {item.text}
+              <div className="hero-login-card">
+                <div className="hero-login-accent"></div>
+
+                <div className="hero-login-topline">
+                  <span className="hero-login-kicker">TenantSync Access</span>
+                  <span className="hero-login-status">Live Secure Login</span>
+                </div>
+
+                <div className="hero-login-header">
+                  <h2>Welcome back</h2>
+                  <p>
+                    Sign in from the landing screen and jump straight into your
+                    apartment management dashboard.
                   </p>
                 </div>
-              ))}
+
+                <form
+                  onSubmit={submitLogin}
+                  className="hero-login-form"
+                  autoComplete="off"
+                >
+                  <label className="hero-login-field">
+                    <span>Email</span>
+                    <input
+                      type="email"
+                      autoComplete="username"
+                      placeholder="Enter your email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                    />
+                  </label>
+
+                  <label className="hero-login-field">
+                    <span>Password</span>
+                    <input
+                      autoComplete="current-password"
+                      placeholder="Enter your password"
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                    />
+                  </label>
+
+                  <button
+                    type="submit"
+                    className="hero-login-submit"
+                    disabled={isSubmitting}
+                  >
+                    {isSubmitting ? "Signing In..." : "Sign In"}
+                  </button>
+
+                  <p className="hero-login-help">
+                    Use your existing TenantSync login credentials.
+                  </p>
+                </form>
+
+                {msg && (
+                  <div
+                    className={`hero-login-message ${
+                      msg.toLowerCase().includes("successful")
+                        ? "success"
+                        : "error"
+                    }`}
+                  >
+                    {msg}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
-        </section>
-      </main>
+        </div>
+      </section>
+
+      {/* Features */}
+<section className="features-section" id="features">
+  <h2>Why Choose TenantSync?</h2>
+  <p className="section-subtitle">
+    Built to simplify modern apartment and tenant management with a secure,
+    organized, and role-based system.
+  </p>
+
+  <div className="features-grid">
+    <div className="feature-card">
+      <h3>Apartment Management</h3>
+      <p>Manage buildings, apartments, units, and occupancy details from one place.</p>
+    </div>
+
+    <div className="feature-card">
+      <h3>Tenant Records</h3>
+      <p>Store and manage tenant information, rent status, and occupancy history securely.</p>
+    </div>
+
+    <div className="feature-card">
+      <h3>Complaint Tracking</h3>
+      <p>Allow tenants to submit issues and help managers track resolutions efficiently.</p>
+    </div>
+
+    <div className="feature-card">
+      <h3>Role-Based Access</h3>
+      <p>Separate dashboards and permissions for admin, manager, and tenant users.</p>
+    </div>
+  </div>
+</section>
+
+      {/* Footer */}
+<footer className="footer">
+  <div className="footer-content">
+    <h3>TenantSync</h3>
+    <p>Smart apartment and tenant management for modern living.</p>
+    <span>Â© 2026 TenantSync. All rights reserved.</span>
+  </div>
+</footer>
+
     </div>
   );
 }

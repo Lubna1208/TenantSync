@@ -12,7 +12,7 @@ export default function ManagerHeader({ user, onLogout }: ManagerHeaderProps) {
       {/* Left */}
       <div>
         <h2>Manager Dashboard</h2>
-        <p style={{ margin: 0, color: "#666" }}>
+        <p style={{ margin: 0, color: "#aac6dc" }}>
           Welcome back, {user.name}
         </p>
       </div>
@@ -24,8 +24,8 @@ export default function ManagerHeader({ user, onLogout }: ManagerHeaderProps) {
 
         {/* Profile */}
         <div style={{ textAlign: "right" }}>
-          <div style={{ fontWeight: "bold" }}>{user.name}</div>
-          <div style={{ fontSize: "12px", color: "#888" }}>
+          <div style={{ fontWeight: "bold", color: "#f4fbff" }}>{user.name}</div>
+          <div style={{ fontSize: "12px", color: "#9cb8d0" }}>
             {user.email || "Manager"}
           </div>
         </div>
