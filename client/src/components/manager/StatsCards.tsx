@@ -12,6 +12,75 @@ type StatsCardsProps = {
   onCardClick: (filterKey: string) => void;
 };
 
+function StatIcon({ statId }: { statId: string }) {
+  const commonProps = {
+    width: 22,
+    height: 22,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.8,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+  };
+
+  switch (statId) {
+    case "all":
+      return (
+        <svg {...commonProps} aria-hidden="true">
+          <path d="M5 21h14" />
+          <path d="M7 21V9l5-4 5 4v12" />
+          <path d="M10 13h4" />
+          <path d="M10 17h4" />
+        </svg>
+      );
+    case "created":
+      return (
+        <svg {...commonProps} aria-hidden="true">
+          <path d="M12 5v14" />
+          <path d="M5 12h14" />
+          <rect x="4" y="4" width="16" height="16" rx="3" />
+        </svg>
+      );
+    case "occupied":
+      return (
+        <svg {...commonProps} aria-hidden="true">
+          <path d="M7 12l3 3 7-7" />
+          <path d="M21 12c0 4.97-4.03 9-9 9s-9-4.03-9-9 4.03-9 9-9 9 4.03 9 9Z" />
+        </svg>
+      );
+    case "vacant":
+      return (
+        <svg {...commonProps} aria-hidden="true">
+          <path d="M8 8h8v8H8z" />
+          <path d="M4 4h16v16H4z" />
+        </svg>
+      );
+    case "active":
+      return (
+        <svg {...commonProps} aria-hidden="true">
+          <path d="M12 3v18" />
+          <path d="M7 8l5-5 5 5" />
+          <path d="M6 21h12" />
+        </svg>
+      );
+    case "expired":
+      return (
+        <svg {...commonProps} aria-hidden="true">
+          <path d="M12 8v4l3 3" />
+          <path d="M3 12a9 9 0 1 0 18 0 9 9 0 1 0-18 0" />
+        </svg>
+      );
+    default:
+      return (
+        <svg {...commonProps} aria-hidden="true">
+          <path d="M12 6v6l4 2" />
+          <path d="M21 12c0 4.97-4.03 9-9 9s-9-4.03-9-9 4.03-9 9-9 9 4.03 9 9Z" />
+        </svg>
+      );
+  }
+}
+
 export default function StatsCards({
   stats,
   activeFilter,
@@ -25,63 +94,26 @@ export default function StatsCards({
         return (
           <div
             key={item.id}
-            className={`dashboard-panel stats-card ${isActive ? "active-stat-card" : ""}`}
+            className={`stats-card ${isActive ? "active-stat-card" : ""}`}
             onClick={() => onCardClick(item.id)}
-            style={{
-              cursor: "pointer",
-              border: isActive ? "2px solid #12b7ff" : "2px solid transparent",
-              transition: "0.2s ease",
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onCardClick(item.id);
+              }
             }}
+            role="button"
+            tabIndex={0}
           >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "flex-start",
-                gap: "10px",
-              }}
-            >
-              <div>
-                <p
-                  style={{
-                    margin: "0 0 6px 0",
-                    fontSize: "14px",
-                    color: "#aac6dc",
-                  }}
-                >
-                  {item.label}
-                </p>
-
-                <h3
-                  style={{
-                    margin: "0 0 6px 0",
-                    fontSize: "28px",
-                    fontWeight: "700",
-                  }}
-                >
-                  {item.value}
-                </h3>
-
-                <p
-                  style={{
-                    margin: 0,
-                    fontSize: "12px",
-                    color: "#9cb8d0",
-                  }}
-                >
-                  {item.note || "No additional note"}
-                </p>
+            <div className="stats-card-top">
+              <div className="stats-card-icon">
+                <StatIcon statId={item.id} />
               </div>
-
-              <div
-                style={{
-                  fontSize: "28px",
-                  lineHeight: 1,
-                }}
-              >
-                {item.icon || "📊"}
-              </div>
+              <span className="stats-card-label">{item.label}</span>
             </div>
+
+            <div className="stats-card-value">{item.value}</div>
+            <p className="stats-card-note">{item.note || "No additional note"}</p>
           </div>
         );
       })}

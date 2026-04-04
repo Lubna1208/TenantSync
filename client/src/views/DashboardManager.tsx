@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 
-import ManagerHeader from "../components/manager/ManagerHeader";
+import ManagerHeaderPolished from "../components/manager/ManagerHeaderPolished";
 import StatsCards from "../components/manager/StatsCards";
 import ApartmentTable from "../components/manager/ApartmentTable";
-import QuickActions from "../components/manager/QuickActions";
 
 import "../styles/managerDashboard.css";
 
@@ -81,6 +80,13 @@ type ComplaintItem = {
   } | null;
 };
 
+type AnnouncementItem = {
+  id: number;
+  created_by?: number;
+};
+
+type NoticeContext = "general" | "actions" | "communication" | "payment";
+
 function safeParseUser(raw: string | null): User | null {
   if (!raw) return null;
   if (raw === "undefined" || raw === "null") return null;
@@ -106,18 +112,6 @@ function formatDate(value?: string | null) {
   });
 }
 
-function formatMonth(value: string) {
-  const [year, month] = value.split("-");
-  const date = new Date(Number(year), Number(month) - 1, 1);
-
-  if (Number.isNaN(date.getTime())) return value;
-
-  return date.toLocaleDateString("en-US", {
-    month: "long",
-    year: "numeric",
-  });
-}
-
 function formatRelative(value: string) {
   const diff = Date.now() - new Date(value).getTime();
   const days = Math.max(0, Math.floor(diff / (1000 * 60 * 60 * 24)));
@@ -131,8 +125,48 @@ function titleCase(value: string) {
   return value.split("_").join(" ").replace(/\\b\\w/g, (letter: string) => letter.toUpperCase());
 }
 
+function getFirstValidationError(errors: unknown): string | null {
+  if (!errors || typeof errors !== "object") {
+    return null;
+  }
+
+  for (const value of Object.values(errors as Record<string, unknown>)) {
+    if (Array.isArray(value) && typeof value[0] === "string") {
+      return value[0];
+    }
+
+    if (typeof value === "string") {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function getFailureMessage(
+  data: { message?: string; errors?: unknown } | null,
+  fallback: string
+) {
+  const firstValidationError = getFirstValidationError(data?.errors);
+  const message = data?.message?.trim();
+
+  if (message && message.toLowerCase() !== "validation failed" && message.toLowerCase() !== "validation failed.") {
+    return message;
+  }
+
+  if (firstValidationError) {
+    return firstValidationError;
+  }
+
+  return message || fallback;
+}
+
 export default function DashboardManager() {
   const navigate = useNavigate();
+  const unitOverviewRef = useRef<HTMLElement | null>(null);
+  const managerActionsRef = useRef<HTMLElement | null>(null);
+  const tenantCommunicationRef = useRef<HTMLElement | null>(null);
+  const paymentSectionRef = useRef<HTMLElement | null>(null);
 
   const [user, setUser] = useState<User | null>(() =>
     safeParseUser(localStorage.getItem("ts_user"))
@@ -141,9 +175,11 @@ export default function DashboardManager() {
   const [activeFilter, setActiveFilter] = useState("all");
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
   const [complaints, setComplaints] = useState<ComplaintItem[]>([]);
+  const [announcementsCount, setAnnouncementsCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [noticeContext, setNoticeContext] = useState<NoticeContext>("general");
   const [unitForm, setUnitForm] = useState({
     unit_number: "",
     floor: "",
@@ -155,7 +191,6 @@ export default function DashboardManager() {
     name: "",
     email: "",
     password: "",
-    password_confirmation: "",
     date_of_birth: "",
     move_in_date: "",
     lease_start: "",
@@ -184,12 +219,25 @@ export default function DashboardManager() {
     void loadDashboard();
   }, [user, navigate]);
 
+  useEffect(() => {
+    if (!message && !error) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      clearNotice();
+    }, 5000);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [message, error]);
+
   async function loadDashboard() {
     setLoading(true);
-    setError("");
 
     try {
-      const [dashboardRes, complaintsRes] = await Promise.all([
+      const [dashboardRes, complaintsRes, announcementsRes] = await Promise.all([
         fetch(`${API}/manager/dashboard`, {
           credentials: "include",
           cache: "no-store",
@@ -198,12 +246,17 @@ export default function DashboardManager() {
           credentials: "include",
           cache: "no-store",
         }),
+        fetch(`${API}/announcements`, {
+          credentials: "include",
+          cache: "no-store",
+        }),
       ]);
 
       const dashboardData = await dashboardRes.json().catch(() => null);
       const complaintsData = await complaintsRes.json().catch(() => null);
+      const announcementsData = await announcementsRes.json().catch(() => null);
 
-      if (dashboardRes.status === 401 || complaintsRes.status === 401) {
+      if (dashboardRes.status === 401 || complaintsRes.status === 401 || announcementsRes.status === 401) {
         localStorage.removeItem("ts_user");
         localStorage.removeItem("ts_token");
         sessionStorage.removeItem("ts_user");
@@ -213,20 +266,26 @@ export default function DashboardManager() {
       }
 
       if (!dashboardRes.ok || !dashboardData) {
-        setError(dashboardData?.message ?? "Manager dashboard could not be loaded.");
+        setFailure(dashboardData?.message ?? "Manager dashboard could not be loaded.", "general");
         setDashboard(null);
         setComplaints([]);
+        setAnnouncementsCount(0);
         return;
       }
 
       setDashboard(dashboardData.data ?? null);
       setComplaints(complaintsData?.data ?? []);
+      setAnnouncementsCount(
+        (announcementsData?.data as AnnouncementItem[] | undefined)?.filter(
+          (item) => item.created_by === user?.id
+        ).length ?? 0
+      );
 
       if (dashboardData.data === null) {
-        setMessage(dashboardData.message ?? "No property is assigned to this manager yet.");
+        setSuccess(dashboardData.message ?? "No property is assigned to this manager yet.", "general");
       }
     } catch {
-      setError("Network error while loading manager dashboard.");
+      setFailure("Network error while loading manager dashboard.", "general");
     } finally {
       setLoading(false);
     }
@@ -249,20 +308,41 @@ export default function DashboardManager() {
     navigate("/login");
   }
 
-  function setSuccess(text: string) {
-    setMessage(text);
+  function clearNotice() {
+    setMessage("");
     setError("");
+    setNoticeContext("general");
   }
 
-  function setFailure(text: string) {
+  function setSuccess(text: string, context: NoticeContext = "general") {
+    setMessage(text);
+    setError("");
+    setNoticeContext(context);
+  }
+
+  function setFailure(text: string, context: NoticeContext = "general") {
     setError(text);
     setMessage("");
+    setNoticeContext(context);
+  }
+
+  function scrollToSection(section: "units" | "actions" | "communication" | "payments") {
+    const sectionMap = {
+      units: unitOverviewRef,
+      actions: managerActionsRef,
+      communication: tenantCommunicationRef,
+      payments: paymentSectionRef,
+    } as const;
+
+    sectionMap[section].current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
   }
 
   async function createUnit(e: FormEvent) {
     e.preventDefault();
-    setMessage("");
-    setError("");
+    clearNotice();
 
     try {
       const res = await fetch(`${API}/manager/units`, {
@@ -278,7 +358,7 @@ export default function DashboardManager() {
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
-        setFailure(data?.message ?? "Unit creation failed.");
+        setFailure(getFailureMessage(data, "Unit creation failed."), "actions");
         return;
       }
 
@@ -288,20 +368,19 @@ export default function DashboardManager() {
         rent_amount: "",
         status: "vacant",
       });
-      setSuccess(data?.message ?? "Unit created successfully.");
+      setSuccess(data?.message ?? "Unit created successfully.", "actions");
       await loadDashboard();
     } catch {
-      setFailure("Network error while creating unit.");
+      setFailure("Network error while creating unit.", "actions");
     }
   }
 
   async function assignTenant(e: FormEvent) {
     e.preventDefault();
-    setMessage("");
-    setError("");
+    clearNotice();
 
     if (!tenantForm.unit_id) {
-      setFailure("Please choose a unit first.");
+      setFailure("Please choose a unit first.", "actions");
       return;
     }
 
@@ -314,6 +393,7 @@ export default function DashboardManager() {
           credentials: "include",
           body: JSON.stringify({
             ...tenantForm,
+            password_confirmation: tenantForm.password,
             date_of_birth: tenantForm.date_of_birth || null,
             move_in_date: tenantForm.move_in_date || null,
             lease_start: tenantForm.lease_start || null,
@@ -325,7 +405,7 @@ export default function DashboardManager() {
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
-        setFailure(data?.message ?? "Tenant assignment failed.");
+        setFailure(getFailureMessage(data, "Tenant assignment failed."), "actions");
         return;
       }
 
@@ -334,25 +414,23 @@ export default function DashboardManager() {
         name: "",
         email: "",
         password: "",
-        password_confirmation: "",
         date_of_birth: "",
         move_in_date: "",
         lease_start: "",
         lease_end: "",
       });
-      setSuccess(data?.message ?? "Tenant assigned successfully.");
+      setSuccess(data?.message ?? "Tenant assigned successfully.", "actions");
       await loadDashboard();
     } catch {
-      setFailure("Network error while assigning tenant.");
+      setFailure("Network error while assigning tenant.", "actions");
     }
   }
 
   async function removeTenant() {
-    setMessage("");
-    setError("");
+    clearNotice();
 
     if (!removeTenantUnitId) {
-      setFailure("Please choose an occupied unit first.");
+      setFailure("Please choose an occupied unit first.", "actions");
       return;
     }
 
@@ -365,21 +443,20 @@ export default function DashboardManager() {
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
-        setFailure(data?.message ?? "Could not remove tenant.");
+        setFailure(getFailureMessage(data, "Could not remove tenant."), "actions");
         return;
       }
 
       setRemoveTenantUnitId("");
-      setSuccess(data?.message ?? "Tenant removed successfully.");
+      setSuccess(data?.message ?? "Tenant removed successfully.", "actions");
       await loadDashboard();
     } catch {
-      setFailure("Network error while removing tenant.");
+      setFailure("Network error while removing tenant.", "actions");
     }
   }
 
   async function updateComplaintStatus(id: number, status: string) {
-    setMessage("");
-    setError("");
+    clearNotice();
 
     try {
       const res = await fetch(`${API}/manager/complaints/${id}`, {
@@ -392,24 +469,23 @@ export default function DashboardManager() {
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
-        setFailure(data?.message ?? "Complaint update failed.");
+        setFailure(getFailureMessage(data, "Complaint update failed."), "communication");
         return;
       }
 
-      setSuccess(data?.message ?? "Complaint updated successfully.");
+      setSuccess(data?.message ?? "Complaint updated successfully.", "communication");
       await loadDashboard();
     } catch {
-      setFailure("Network error while updating complaint.");
+      setFailure("Network error while updating complaint.", "communication");
     }
   }
 
   async function savePayment(e: FormEvent) {
     e.preventDefault();
-    setMessage("");
-    setError("");
+    clearNotice();
 
     if (!paymentForm.tenant_id) {
-      setFailure("Choose a tenant before saving a payment.");
+      setFailure("Choose a tenant before saving a payment.", "payment");
       return;
     }
 
@@ -430,7 +506,7 @@ export default function DashboardManager() {
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
-        setFailure(data?.message ?? "Rent payment could not be saved.");
+        setFailure(getFailureMessage(data, "Rent payment could not be saved."), "payment");
         return;
       }
 
@@ -439,16 +515,15 @@ export default function DashboardManager() {
         tenant_id: "",
         amount: "",
       }));
-      setSuccess(data?.message ?? "Rent payment saved successfully.");
+      setSuccess(data?.message ?? "Rent payment saved successfully.", "payment");
     } catch {
-      setFailure("Network error while saving rent payment.");
+      setFailure("Network error while saving rent payment.", "payment");
     }
   }
 
   async function publishAnnouncement(e: FormEvent) {
     e.preventDefault();
-    setMessage("");
-    setError("");
+    clearNotice();
 
     try {
       const res = await fetch(`${API}/manager/announcements`, {
@@ -461,7 +536,7 @@ export default function DashboardManager() {
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
-        setFailure(data?.message ?? "Announcement could not be published.");
+        setFailure(getFailureMessage(data, "Announcement could not be published."), "communication");
         return;
       }
 
@@ -470,9 +545,10 @@ export default function DashboardManager() {
         message: "",
         target_role: "tenant",
       });
-      setSuccess(data?.message ?? "Announcement published successfully.");
+      setAnnouncementsCount((current) => current + 1);
+      setSuccess(data?.message ?? "Announcement published successfully.", "communication");
     } catch {
-      setFailure("Network error while publishing announcement.");
+      setFailure("Network error while publishing announcement.", "communication");
     }
   }
 
@@ -532,6 +608,26 @@ export default function DashboardManager() {
       note: "Ready for tenants",
       icon: "Open",
     },
+    {
+      id: "active",
+      label: "Unit Active",
+      value: units.filter((unit) => {
+        const activeTenant = unit.tenants?.find((tenant) => tenant.unit_id !== null);
+        return !!activeTenant?.user && !!activeTenant.lease_end;
+      }).length,
+      note: "Lease currently active",
+      icon: "Active",
+    },
+    {
+      id: "expired",
+      label: "Unit Expired",
+      value: units.filter((unit) => {
+        const activeTenant = unit.tenants?.find((tenant) => tenant.unit_id !== null);
+        return !activeTenant?.user;
+      }).length,
+      note: "Lease needs renewal",
+      icon: "Expired",
+    },
   ];
 
   const apartments = units.map((unit) => {
@@ -557,33 +653,17 @@ export default function DashboardManager() {
     };
   });
 
-  const quickActions = [
-    {
-      id: 1,
-      label: property ? property.name : "No Property Yet",
-      description: property
-        ? `${property.address}`
-        : "Owner has not assigned a property yet",
-      icon: "Property",
-    },
-    {
-      id: 2,
-      label: "Active Tenants",
-      description: `${tenants.length} tenant accounts currently assigned`,
-      icon: "People",
-    },
-    {
-      id: 3,
-      label: "Open Complaints",
-      description: `${complaints.filter((item) => item.status !== "resolved").length} items need attention`,
-      icon: "Alert",
-    },
-  ];
+  const noticeText = error || message;
+  const noticeTone = error ? "error" : "success";
+  const generalNotice = noticeContext === "general" ? noticeText : "";
+  const actionNotice = noticeContext === "actions" ? noticeText : "";
+  const communicationNotice = noticeContext === "communication" ? noticeText : "";
+  const paymentNotice = noticeContext === "payment" ? noticeText : "";
 
   return (
     <div className="manager-dashboard">
       <div className="dashboard-container">
-        <ManagerHeader
+        <ManagerHeaderPolished
           user={{
             name: user.name || "Manager",
             email: user.email || "manager@tenantsync.com",
@@ -591,35 +671,327 @@ export default function DashboardManager() {
           onLogout={logout}
         />
 
-        {(message || error) && (
-          <div className={`manager-alert ${error ? "error" : "success"}`}>
-            {error || message}
+        {generalNotice && (
+          <div className={`manager-alert ${noticeTone}`}>
+            {generalNotice}
           </div>
         )}
 
-        <StatsCards
-          stats={statsData}
-          activeFilter={activeFilter}
-          onCardClick={setActiveFilter}
-        />
+        <section className="manager-overview-hero">
+          <div className="manager-overview-copy">
+            <div className="manager-overview-badge">Manager Summary</div>
+            <h3>Property Overview</h3>
+            {property ? (
+              <>
+                <div className="manager-overview-property-name">{property.name}</div>
+                <div className="manager-overview-location">Location: {property.address}</div>
+                <p className="manager-overview-text">
+                  Assigned property overview and current activity.
+                </p>
+              </>
+            ) : (
+              <>
+                <div className="manager-overview-property-name">No property assigned yet</div>
+                <div className="manager-overview-location">Location: Waiting for owner assignment</div>
+                <p className="manager-overview-text">
+                  Property summary and activity will appear here after an assignment.
+                </p>
+              </>
+            )}
+            <div className="manager-overview-actions">
+              <button
+                type="button"
+                className="manager-overview-action-btn"
+                onClick={() => scrollToSection("units")}
+              >
+                Unit Overview
+              </button>
+              <button
+                type="button"
+                className="manager-overview-action-btn"
+                onClick={() => scrollToSection("actions")}
+              >
+                Manager Actions
+              </button>
+              <button
+                type="button"
+                className="manager-overview-action-btn"
+                onClick={() => scrollToSection("communication")}
+              >
+                Tenant Communication
+              </button>
+              <button
+                type="button"
+                className="manager-overview-action-btn"
+                onClick={() => scrollToSection("payments")}
+              >
+                Rent Payments
+              </button>
+            </div>
+          </div>
+        </section>
 
-        <div className="quick-actions-section">
-          <QuickActions actions={quickActions} />
-        </div>
+        <section className="unit-overview-section" ref={unitOverviewRef}>
+          <div className="unit-overview-header">
+            <div className="unit-overview-badge">Unit Overview</div>
+            <h3>Apartment Filters and Overview</h3>
+            <p>Filter unit status quickly and review the apartment list from one section.</p>
+          </div>
 
-        <div className="dashboard-main-grid">
-          <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
-            <ApartmentTable
-              apartments={apartments}
-              searchTerm={searchTerm}
-              activeFilter={activeFilter}
-              setSearchTerm={setSearchTerm}
-            />
+          <StatsCards
+            stats={statsData}
+            activeFilter={activeFilter}
+            onCardClick={setActiveFilter}
+          />
 
-            <div className="dashboard-panel">
+          <ApartmentTable
+            apartments={apartments}
+            searchTerm={searchTerm}
+            activeFilter={activeFilter}
+            setSearchTerm={setSearchTerm}
+          />
+        </section>
+
+        <section className="manager-actions-section" ref={managerActionsRef}>
+          <div className="manager-actions-header">
+            <div className="manager-actions-badge">Manager Actions</div>
+            <h3>Tenant and Unit Actions</h3>
+            <p>Manage tenant assignment, add new units, and remove tenant access from one control area.</p>
+          </div>
+
+          {actionNotice && (
+            <div className={`manager-alert manager-section-alert ${noticeTone}`}>
+              {actionNotice}
+            </div>
+          )}
+
+          <div className="manager-actions-grid">
+            <form className="dashboard-panel dashboard-side-panel manager-form assign-tenant-form" onSubmit={assignTenant}>
+              <h3>Assign Tenant</h3>
+              <label className="manager-field-group">
+                <span className="manager-form-label">Vacant Unit</span>
+                <select
+                  className="manager-input manager-select-input"
+                  value={tenantForm.unit_id}
+                  onChange={(e) =>
+                    setTenantForm((current) => ({
+                      ...current,
+                      unit_id: e.target.value,
+                    }))
+                  }
+                >
+                  <option value="">Choose vacant unit</option>
+                  {units
+                    .filter((unit) => unit.status === "vacant")
+                    .map((unit) => (
+                      <option key={unit.id} value={unit.id}>
+                        {unit.unit_number}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <label className="manager-field-group">
+                <span className="manager-form-label">Tenant Name</span>
+                <input
+                  className="manager-input"
+                  placeholder="Enter tenant name"
+                  value={tenantForm.name}
+                  onChange={(e) =>
+                    setTenantForm((current) => ({ ...current, name: e.target.value }))
+                  }
+                />
+              </label>
+              <label className="manager-field-group">
+                <span className="manager-form-label">Tenant Email</span>
+                <input
+                  className="manager-input"
+                  placeholder="Enter tenant email"
+                  type="email"
+                  value={tenantForm.email}
+                  onChange={(e) =>
+                    setTenantForm((current) => ({ ...current, email: e.target.value }))
+                  }
+                />
+              </label>
+              <label className="manager-field-group">
+                <span className="manager-form-label">Password</span>
+                <input
+                  className="manager-input"
+                  placeholder="Enter password"
+                  type="password"
+                  value={tenantForm.password}
+                  onChange={(e) =>
+                    setTenantForm((current) => ({
+                      ...current,
+                      password: e.target.value,
+                    }))
+                  }
+                />
+              </label>
+              <label className="manager-field-group">
+                <span className="manager-form-label">Move In Date</span>
+                <input
+                  className="manager-input manager-date-input"
+                  type="date"
+                  value={tenantForm.move_in_date}
+                  onChange={(e) =>
+                    setTenantForm((current) => ({
+                      ...current,
+                      move_in_date: e.target.value,
+                    }))
+                  }
+                />
+              </label>
+              <div className="manager-inline-fields">
+                <label className="manager-field-group">
+                  <span className="manager-form-label">Lease Start</span>
+                  <input
+                    className="manager-input manager-date-input"
+                    type="date"
+                    value={tenantForm.lease_start}
+                    onChange={(e) =>
+                      setTenantForm((current) => ({
+                        ...current,
+                        lease_start: e.target.value,
+                      }))
+                    }
+                  />
+                </label>
+                <label className="manager-field-group">
+                  <span className="manager-form-label">Lease End</span>
+                  <input
+                    className="manager-input manager-date-input"
+                    type="date"
+                    value={tenantForm.lease_end}
+                    onChange={(e) =>
+                      setTenantForm((current) => ({
+                        ...current,
+                        lease_end: e.target.value,
+                      }))
+                    }
+                  />
+                </label>
+              </div>
+              <button className="action-btn" type="submit" disabled={!property}>
+                Assign Tenant
+              </button>
+            </form>
+
+            <div className="manager-actions-side">
+              <form className="dashboard-panel dashboard-side-panel manager-form" onSubmit={createUnit}>
+                <h3>Add Unit Details</h3>
+                <p className="manager-form-subtitle">Add a new unit with rent and occupancy details for this property.</p>
+                <input
+                  className="manager-input"
+                  placeholder="Unit number"
+                  value={unitForm.unit_number}
+                  onChange={(e) =>
+                    setUnitForm((current) => ({
+                      ...current,
+                      unit_number: e.target.value,
+                    }))
+                  }
+                />
+                <input
+                  className="manager-input"
+                  placeholder="Floor"
+                  value={unitForm.floor}
+                  onChange={(e) =>
+                    setUnitForm((current) => ({
+                      ...current,
+                      floor: e.target.value,
+                    }))
+                  }
+                />
+                <input
+                  className="manager-input manager-number-input"
+                  type="number"
+                  min="0"
+                  placeholder="Rent amount"
+                  value={unitForm.rent_amount}
+                  onChange={(e) =>
+                    setUnitForm((current) => ({
+                      ...current,
+                      rent_amount: e.target.value,
+                    }))
+                  }
+                />
+                <select
+                  className="manager-input manager-select-input"
+                  value={unitForm.status}
+                  onChange={(e) =>
+                    setUnitForm((current) => ({
+                      ...current,
+                      status: e.target.value as "vacant" | "occupied",
+                    }))
+                  }
+                >
+                  <option value="vacant">Vacant</option>
+                  <option value="occupied">Occupied</option>
+                </select>
+                <button className="action-btn" type="submit" disabled={!property}>
+                  Save Unit
+                </button>
+              </form>
+
+              <div className="dashboard-panel dashboard-side-panel manager-form remove-tenant-form">
+                <h3>Remove Tenant</h3>
+                <select
+                  className="manager-input manager-select-input"
+                  value={removeTenantUnitId}
+                  onChange={(e) => setRemoveTenantUnitId(e.target.value)}
+                >
+                  <option value="">Choose occupied unit</option>
+                  {units
+                    .filter((unit) => unit.status === "occupied")
+                    .map((unit) => (
+                      <option key={unit.id} value={unit.id}>
+                        {unit.unit_number}
+                      </option>
+                    ))}
+                </select>
+                <button
+                  className="remove-tenant-btn"
+                  onClick={() => void removeTenant()}
+                  disabled={!property}
+                >
+                  Delete Tenant Login
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="tenant-communication-section" ref={tenantCommunicationRef}>
+          <div className="tenant-communication-header">
+            <div className="tenant-communication-badge">Tenant Communication</div>
+            <h3>Complaints and Announcements</h3>
+            <p>Review tenant complaints on the left and publish tenant announcements on the right.</p>
+          </div>
+
+          {communicationNotice && (
+            <div className={`manager-alert manager-section-alert ${noticeTone}`}>
+              {communicationNotice}
+            </div>
+          )}
+
+          <div className="tenant-communication-stats">
+            <div className="tenant-communication-stat-card">
+              <span className="tenant-communication-stat-label">Tenant Complaints</span>
+              <strong className="tenant-communication-stat-value">{complaints.length}</strong>
+            </div>
+            <div className="tenant-communication-stat-card">
+              <span className="tenant-communication-stat-label">Announcements</span>
+              <strong className="tenant-communication-stat-value">{announcementsCount}</strong>
+            </div>
+          </div>
+
+        <div className="dashboard-main-grid tenant-communication-grid">
+          <div className="dashboard-left-column">
+            <div className="dashboard-panel complaints-panel">
               <div className="table-header-row">
                 <h3>Tenant Complaints</h3>
-                <span style={{ color: "#666", fontSize: "13px", fontWeight: 600 }}>
+                <span style={{ color: "#9cb8d0", fontSize: "13px", fontWeight: 600 }}>
                   {complaints.length} complaint{complaints.length === 1 ? "" : "s"}
                 </span>
               </div>
@@ -633,46 +1005,39 @@ export default function DashboardManager() {
                   {complaints.map((complaint) => (
                     <div key={complaint.id} className="complaint-item">
                       <div className="complaint-top">
-                        <div>
+                        <div className="complaint-copy">
                           <h4>{complaint.title}</h4>
                           <p>
-                            Unit {complaint.unit?.unit_number ?? "-"} • {complaint.tenant?.user?.name ?? "Tenant"}
+                            Unit {complaint.unit?.unit_number ?? "-"} â€¢ {complaint.tenant?.user?.name ?? "Tenant"}
                           </p>
                         </div>
-                        <span className={`priority-badge ${(complaint.priority ?? "medium").toLowerCase()}`}>
-                          {titleCase(complaint.priority ?? "medium")}
-                        </span>
+                        <div className="complaint-meta-column">
+                          <span className={`priority-badge ${(complaint.priority ?? "medium").toLowerCase()}`}>
+                            {titleCase(complaint.priority ?? "medium")}
+                          </span>
+                        </div>
                       </div>
 
                       <p>{complaint.description}</p>
                       <p>
-                        Category: {complaint.category || "General"} • Submitted {formatRelative(complaint.created_at)}
+                        Category: {complaint.category || "General"} â€¢ Submitted {formatRelative(complaint.created_at)}
                       </p>
 
-                      <div
-                        style={{
-                          marginTop: "12px",
-                          display: "flex",
-                          justifyContent: "space-between",
-                          alignItems: "center",
-                          gap: "12px",
-                          flexWrap: "wrap",
-                        }}
-                      >
-                        <span className={`status-badge ${complaint.status === "resolved" ? "resolved" : complaint.status === "in_progress" ? "in-progress" : "pending"}`}>
-                          {titleCase(complaint.status)}
-                        </span>
-
-                        <select
-                          className="manager-input"
-                          style={{ width: "180px", maxWidth: "100%" }}
-                          value={complaint.status}
-                          onChange={(e) => void updateComplaintStatus(complaint.id, e.target.value)}
-                        >
-                          <option value="open">Open</option>
-                          <option value="in_progress">In Progress</option>
-                          <option value="resolved">Resolved</option>
-                        </select>
+                      <div className="complaint-footer">
+                        <div className="complaint-status-row">
+                          <span className={`status-badge ${complaint.status === "resolved" ? "resolved" : complaint.status === "in_progress" ? "in-progress" : "pending"}`}>
+                            {titleCase(complaint.status)}
+                          </span>
+                          <select
+                            className="manager-input manager-select-input complaint-status-select"
+                            value={complaint.status}
+                            onChange={(e) => void updateComplaintStatus(complaint.id, e.target.value)}
+                          >
+                            <option value="open">Open</option>
+                            <option value="in_progress">In Progress</option>
+                            <option value="resolved">Resolved</option>
+                          </select>
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -682,208 +1047,79 @@ export default function DashboardManager() {
           </div>
 
           <div className="dashboard-right-column">
-            <div className="dashboard-panel">
-              <h3>Assigned Property</h3>
-              {loading ? (
-                <p className="empty-text">Loading property...</p>
-              ) : property ? (
-                <div className="manager-property-summary">
-                  <p>
-                    <strong>{property.name}</strong>
-                  </p>
-                  <p>{property.address}</p>
-                  <p>Unit limit: {dashboard?.summary.unit_limit ?? 0}</p>
-                  <p>Added units: {dashboard?.summary.units_created ?? 0}</p>
-                </div>
-              ) : (
-                <p className="empty-text">No property assigned by the owner yet.</p>
-              )}
-            </div>
-
-            <form className="dashboard-panel manager-form" onSubmit={createUnit}>
-              <h3>Add Unit Details</h3>
-              <input
-                className="manager-input"
-                placeholder="Unit number"
-                value={unitForm.unit_number}
-                onChange={(e) =>
-                  setUnitForm((current) => ({
-                    ...current,
-                    unit_number: e.target.value,
-                  }))
-                }
-              />
-              <input
-                className="manager-input"
-                placeholder="Floor"
-                value={unitForm.floor}
-                onChange={(e) =>
-                  setUnitForm((current) => ({
-                    ...current,
-                    floor: e.target.value,
-                  }))
-                }
-              />
-              <input
-                className="manager-input"
-                type="number"
-                min="0"
-                placeholder="Rent amount"
-                value={unitForm.rent_amount}
-                onChange={(e) =>
-                  setUnitForm((current) => ({
-                    ...current,
-                    rent_amount: e.target.value,
-                  }))
-                }
-              />
-              <select
-                className="manager-input"
-                value={unitForm.status}
-                onChange={(e) =>
-                  setUnitForm((current) => ({
-                    ...current,
-                    status: e.target.value as "vacant" | "occupied",
-                  }))
-                }
-              >
-                <option value="vacant">Vacant</option>
-                <option value="occupied">Occupied</option>
-              </select>
+            <form className="dashboard-panel dashboard-side-panel manager-form announcement-form" onSubmit={publishAnnouncement}>
+              <h3>Publish Announcement</h3>
+              <label className="manager-field-group">
+                <span className="manager-form-label">Announcement Title</span>
+                <input
+                  className="manager-input"
+                  placeholder="Enter announcement title"
+                  value={announcementForm.title}
+                  onChange={(e) =>
+                    setAnnouncementForm((current) => ({
+                      ...current,
+                      title: e.target.value,
+                    }))
+                  }
+                />
+              </label>
+              <label className="manager-field-group">
+                <span className="manager-form-label">Message</span>
+                <textarea
+                  className="manager-input manager-textarea"
+                  placeholder="Write the update for tenants"
+                  value={announcementForm.message}
+                  onChange={(e) =>
+                    setAnnouncementForm((current) => ({
+                      ...current,
+                      message: e.target.value,
+                    }))
+                  }
+                />
+              </label>
+              <label className="manager-field-group">
+                <span className="manager-form-label">Audience</span>
+                <select
+                  className="manager-input manager-select-input"
+                  value={announcementForm.target_role}
+                  onChange={(e) =>
+                    setAnnouncementForm((current) => ({
+                      ...current,
+                      target_role: e.target.value,
+                    }))
+                  }
+                >
+                  <option value="tenant">Tenant only</option>
+                  <option value="all">Everyone</option>
+                  <option value="manager">Manager only</option>
+                </select>
+              </label>
               <button className="action-btn" type="submit" disabled={!property}>
-                Save Unit
+                Publish Notice
               </button>
             </form>
+          </div>
+        </div>
+        </section>
 
-            <form className="dashboard-panel manager-form" onSubmit={assignTenant}>
-              <h3>Assign Tenant</h3>
-              <select
-                className="manager-input"
-                value={tenantForm.unit_id}
-                onChange={(e) =>
-                  setTenantForm((current) => ({
-                    ...current,
-                    unit_id: e.target.value,
-                  }))
-                }
-              >
-                <option value="">Choose vacant unit</option>
-                {units
-                  .filter((unit) => unit.status === "vacant")
-                  .map((unit) => (
-                    <option key={unit.id} value={unit.id}>
-                      {unit.unit_number}
-                    </option>
-                  ))}
-              </select>
-              <input
-                className="manager-input"
-                placeholder="Tenant name"
-                value={tenantForm.name}
-                onChange={(e) =>
-                  setTenantForm((current) => ({ ...current, name: e.target.value }))
-                }
-              />
-              <input
-                className="manager-input"
-                placeholder="Tenant email"
-                type="email"
-                value={tenantForm.email}
-                onChange={(e) =>
-                  setTenantForm((current) => ({ ...current, email: e.target.value }))
-                }
-              />
-              <input
-                className="manager-input"
-                placeholder="Tenant password"
-                type="password"
-                value={tenantForm.password}
-                onChange={(e) =>
-                  setTenantForm((current) => ({
-                    ...current,
-                    password: e.target.value,
-                  }))
-                }
-              />
-              <input
-                className="manager-input"
-                placeholder="Confirm password"
-                type="password"
-                value={tenantForm.password_confirmation}
-                onChange={(e) =>
-                  setTenantForm((current) => ({
-                    ...current,
-                    password_confirmation: e.target.value,
-                  }))
-                }
-              />
-              <input
-                className="manager-input"
-                type="date"
-                value={tenantForm.move_in_date}
-                onChange={(e) =>
-                  setTenantForm((current) => ({
-                    ...current,
-                    move_in_date: e.target.value,
-                  }))
-                }
-              />
-              <input
-                className="manager-input"
-                type="date"
-                value={tenantForm.lease_start}
-                onChange={(e) =>
-                  setTenantForm((current) => ({
-                    ...current,
-                    lease_start: e.target.value,
-                  }))
-                }
-              />
-              <input
-                className="manager-input"
-                type="date"
-                value={tenantForm.lease_end}
-                onChange={(e) =>
-                  setTenantForm((current) => ({
-                    ...current,
-                    lease_end: e.target.value,
-                  }))
-                }
-              />
-              <button className="action-btn" type="submit" disabled={!property}>
-                Assign Tenant
-              </button>
-            </form>
+        <section className="payment-section" ref={paymentSectionRef}>
+          <div className="payment-section-header">
+            <div className="payment-section-badge">Rent Payments</div>
+            <h3>Record Rent Payment</h3>
+            <p>Keep rent payment updates in one final section at the bottom of the manager console.</p>
+          </div>
 
-            <div className="dashboard-panel manager-form">
-              <h3>Remove Tenant</h3>
-              <select
-                className="manager-input"
-                value={removeTenantUnitId}
-                onChange={(e) => setRemoveTenantUnitId(e.target.value)}
-              >
-                <option value="">Choose occupied unit</option>
-                {units
-                  .filter((unit) => unit.status === "occupied")
-                  .map((unit) => (
-                    <option key={unit.id} value={unit.id}>
-                      {unit.unit_number}
-                    </option>
-                  ))}
-              </select>
-              <button
-                className="action-btn"
-                onClick={() => void removeTenant()}
-                disabled={!property}
-              >
-                Delete Tenant Login
-              </button>
+          {paymentNotice && (
+            <div className={`manager-alert manager-section-alert ${noticeTone}`}>
+              {paymentNotice}
             </div>
+          )}
 
-            <form className="dashboard-panel manager-form" onSubmit={savePayment}>
-              <h3>Record Rent Payment</h3>
+          <form className="dashboard-panel dashboard-side-panel manager-form payment-form" onSubmit={savePayment}>
+            <label className="manager-field-group">
+              <span className="manager-form-label">Tenant</span>
               <select
-                className="manager-input"
+                className="manager-input manager-select-input"
                 value={paymentForm.tenant_id}
                 onChange={(e) => {
                   const selectedTenant = tenants.find(
@@ -904,8 +1140,11 @@ export default function DashboardManager() {
                   </option>
                 ))}
               </select>
+            </label>
+            <label className="manager-field-group">
+              <span className="manager-form-label">Payment Month</span>
               <input
-                className="manager-input"
+                className="manager-input manager-month-input"
                 type="month"
                 value={paymentForm.payment_month}
                 onChange={(e) =>
@@ -915,11 +1154,14 @@ export default function DashboardManager() {
                   }))
                 }
               />
+            </label>
+            <label className="manager-field-group">
+              <span className="manager-form-label">Amount</span>
               <input
                 className="manager-input"
                 type="number"
                 min="0"
-                placeholder="Amount"
+                placeholder="Enter amount"
                 value={paymentForm.amount}
                 onChange={(e) =>
                   setPaymentForm((current) => ({
@@ -928,8 +1170,11 @@ export default function DashboardManager() {
                   }))
                 }
               />
+            </label>
+            <label className="manager-field-group">
+              <span className="manager-form-label">Payment Date</span>
               <input
-                className="manager-input"
+                className="manager-input manager-date-input"
                 type="date"
                 value={paymentForm.payment_date}
                 onChange={(e) =>
@@ -939,8 +1184,11 @@ export default function DashboardManager() {
                   }))
                 }
               />
+            </label>
+            <label className="manager-field-group">
+              <span className="manager-form-label">Status</span>
               <select
-                className="manager-input"
+                className="manager-input manager-select-input"
                 value={paymentForm.status}
                 onChange={(e) =>
                   setPaymentForm((current) => ({
@@ -953,88 +1201,18 @@ export default function DashboardManager() {
                 <option value="pending">Pending</option>
                 <option value="unpaid">Unpaid</option>
               </select>
-              <button className="action-btn" type="submit" disabled={!property}>
-                Save Payment
-              </button>
-            </form>
-
-            <form className="dashboard-panel manager-form" onSubmit={publishAnnouncement}>
-              <h3>Publish Announcement</h3>
-              <input
-                className="manager-input"
-                placeholder="Announcement title"
-                value={announcementForm.title}
-                onChange={(e) =>
-                  setAnnouncementForm((current) => ({
-                    ...current,
-                    title: e.target.value,
-                  }))
-                }
-              />
-              <textarea
-                className="manager-input"
-                style={{ minHeight: "110px", resize: "vertical", fontFamily: "inherit" }}
-                placeholder="Write the update for tenants"
-                value={announcementForm.message}
-                onChange={(e) =>
-                  setAnnouncementForm((current) => ({
-                    ...current,
-                    message: e.target.value,
-                  }))
-                }
-              />
-              <select
-                className="manager-input"
-                value={announcementForm.target_role}
-                onChange={(e) =>
-                  setAnnouncementForm((current) => ({
-                    ...current,
-                    target_role: e.target.value,
-                  }))
-                }
-              >
-                <option value="tenant">Tenant only</option>
-                <option value="all">Everyone</option>
-                <option value="manager">Manager only</option>
-              </select>
-              <button className="action-btn" type="submit" disabled={!property}>
-                Publish Notice
-              </button>
-            </form>
-          </div>
-        </div>
-
-        <div className="dashboard-footer-actions">
-          <div
-            className="dashboard-panel"
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-              gap: "16px",
-            }}
-          >
-            <div>
-              <strong style={{ display: "block", fontSize: "20px", marginBottom: "4px" }}>{tenants.length}</strong>
-              <p style={{ margin: 0, color: "#666", fontSize: "13px" }}>Active tenants</p>
-            </div>
-            <div>
-              <strong style={{ display: "block", fontSize: "20px", marginBottom: "4px" }}>{complaints.filter((item) => item.status === "open").length}</strong>
-              <p style={{ margin: 0, color: "#666", fontSize: "13px" }}>Open complaints</p>
-            </div>
-            <div>
-              <strong style={{ display: "block", fontSize: "20px", marginBottom: "4px" }}>{paymentForm.payment_month ? formatMonth(paymentForm.payment_month) : "This month"}</strong>
-              <p style={{ margin: 0, color: "#666", fontSize: "13px" }}>Current rent cycle</p>
-            </div>
-            <div>
-              <strong style={{ display: "block", fontSize: "20px", marginBottom: "4px" }}>{property ? formatDate(new Date().toISOString()) : "Waiting"}</strong>
-              <p style={{ margin: 0, color: "#666", fontSize: "13px" }}>Last dashboard refresh</p>
-            </div>
-          </div>
-        </div>
+            </label>
+            <button className="action-btn" type="submit" disabled={!property}>
+              Save Payment
+            </button>
+          </form>
+        </section>
       </div>
     </div>
   );
 }
+
+
 
 
 
