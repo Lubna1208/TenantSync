@@ -8,15 +8,14 @@ use Illuminate\Support\Facades\Hash;
 
 class AdminUserSeeder extends Seeder
 {
-    public function run(): void
+    public function run()
     {
         User::updateOrCreate(
-            ['email' => 'admin@tenantsync.com'],
+            ['email' => 'admin@gmail.com'],
             [
-                'name' => 'Owner Admin',
-                'password' => Hash::make('password'),
+                'name' => 'Admin',
+                'password' => Hash::make('123456'),
                 'role' => 'admin',
-                'status' => 'active'
             ]
         );
     }

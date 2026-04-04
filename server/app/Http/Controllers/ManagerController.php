@@ -2,7 +2,10 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Announcement;
 use App\Models\Apartment;
+use App\Models\Complaint;
+use App\Models\RentPayment;
 use App\Models\Tenant;
 use App\Models\Unit;
 use App\Models\User;
@@ -345,6 +348,179 @@ class ManagerController extends Controller
             'message' => 'Tenant removed and unit marked vacant successfully',
             'data' => $unit,
         ]);
+    }
+
+    public function complaints()
+    {
+        $manager = auth('api')->user();
+        $property = $this->assignedProperty($manager->id);
+
+        if (! $property) {
+            return response()->json([
+                'message' => 'No property is assigned to this manager yet.',
+                'data' => [],
+            ]);
+        }
+
+        $complaints = Complaint::query()
+            ->whereHas('unit', function ($query) use ($property) {
+                $query->where('apartment_id', $property->id);
+            })
+            ->with([
+                'tenant.user',
+                'unit',
+            ])
+            ->latest()
+            ->get();
+
+        return response()->json([
+            'message' => 'Complaints fetched successfully',
+            'data' => $complaints,
+        ]);
+    }
+
+    public function updateComplaint(Request $request, $id)
+    {
+        $manager = auth('api')->user();
+        $property = $this->assignedProperty($manager->id);
+
+        if (! $property) {
+            return response()->json([
+                'message' => 'No property is assigned to this manager yet.',
+            ], 422);
+        }
+
+        $complaint = Complaint::query()
+            ->whereHas('unit', function ($query) use ($property) {
+                $query->where('apartment_id', $property->id);
+            })
+            ->with(['tenant.user', 'unit'])
+            ->find($id);
+
+        if (! $complaint) {
+            return response()->json([
+                'message' => 'Complaint not found',
+            ], 404);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'status' => 'required|in:open,in_progress,resolved',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'message' => 'Validation failed',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $complaint->update([
+            'status' => $request->status,
+        ]);
+
+        return response()->json([
+            'message' => 'Complaint updated successfully',
+            'data' => $complaint->fresh(['tenant.user', 'unit']),
+        ]);
+    }
+
+    public function storeRentPayment(Request $request)
+    {
+        $manager = auth('api')->user();
+        $property = $this->assignedProperty($manager->id);
+
+        if (! $property) {
+            return response()->json([
+                'message' => 'No property is assigned to this manager yet.',
+            ], 422);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'tenant_id' => 'required|integer',
+            'amount' => 'required|numeric|min:0',
+            'payment_month' => 'required|date_format:Y-m',
+            'payment_date' => 'nullable|date',
+            'status' => 'nullable|in:paid,unpaid,pending',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'message' => 'Validation failed',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $tenant = Tenant::query()
+            ->where('id', $request->tenant_id)
+            ->whereHas('unit', function ($query) use ($property) {
+                $query->where('apartment_id', $property->id);
+            })
+            ->with('unit')
+            ->first();
+
+        if (! $tenant || ! $tenant->unit) {
+            return response()->json([
+                'message' => 'Tenant not found in your assigned property.',
+            ], 404);
+        }
+
+        $paymentDate = $request->payment_date;
+        $status = $request->status ?? ($paymentDate ? 'paid' : 'pending');
+
+        $payment = RentPayment::updateOrCreate(
+            [
+                'tenant_id' => $tenant->id,
+                'payment_month' => $request->payment_month,
+            ],
+            [
+                'unit_id' => $tenant->unit->id,
+                'amount' => $request->amount,
+                'payment_date' => $paymentDate,
+                'status' => $status,
+            ]
+        );
+
+        return response()->json([
+            'message' => 'Rent payment saved successfully',
+            'data' => $payment->fresh(['tenant.user', 'unit']),
+        ], 201);
+    }
+
+    public function storeAnnouncement(Request $request)
+    {
+        $manager = auth('api')->user();
+        $property = $this->assignedProperty($manager->id);
+
+        if (! $property) {
+            return response()->json([
+                'message' => 'No property is assigned to this manager yet.',
+            ], 422);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'title' => 'required|string|max:255',
+            'message' => 'required|string',
+            'target_role' => 'nullable|in:tenant,manager,all',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'message' => 'Validation failed',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $announcement = Announcement::create([
+            'created_by' => $manager->id,
+            'title' => $request->title,
+            'message' => $request->message,
+            'target_role' => $request->target_role ?? 'tenant',
+        ]);
+
+        return response()->json([
+            'message' => 'Announcement created successfully',
+            'data' => $announcement->load('creator'),
+        ], 201);
     }
 
     private function assignedProperty(int $managerId): ?Apartment
