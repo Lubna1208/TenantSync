@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Unit;
+use App\Models\Apartment;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
 
@@ -48,6 +49,14 @@ class UnitController extends Controller
         if ($existingUnit) {
             return response()->json([
                 'message' => 'This unit number already exists in the selected apartment',
+            ], 422);
+        }
+
+        $apartment = Apartment::find($request->apartment_id);
+
+        if ($apartment && $apartment->units()->count() >= $apartment->total_units) {
+            return response()->json([
+                'message' => 'Unit limit reached for this property.',
             ], 422);
         }
 

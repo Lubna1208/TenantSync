@@ -8,16 +8,31 @@ use Illuminate\Support\Facades\Hash;
 
 class AdminUserSeeder extends Seeder
 {
-    public function run(): void
+    public function run()
     {
-        User::updateOrCreate(
-            ['email' => 'admin@tenantsync.com'],
+        $admins = [
             [
-                'name' => 'Owner Admin',
-                'password' => Hash::make('password'),
-                'role' => 'admin',
-                'status' => 'active'
-            ]
-        );
+                'name' => 'Admin',
+                'email' => 'admin@gmail.com',
+                'password' => '123456',
+            ],
+            [
+                'name' => 'Super Admin',
+                'email' => 'superadmin@gmail.com',
+                'password' => '123456',
+            ],
+        ];
+
+        foreach ($admins as $admin) {
+            User::updateOrCreate(
+                ['email' => $admin['email']],
+                [
+                    'name' => $admin['name'],
+                    'password' => Hash::make($admin['password']),
+                    'role' => 'admin',
+                    'status' => 'active',
+                ]
+            );
+        }
     }
 }

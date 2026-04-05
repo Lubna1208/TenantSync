@@ -3,7 +3,7 @@ const buffer = 15 * 60 * 1000; // 15 mins buffer time to account for network/res
 
 export const calculateAttendanceMarks = (attendanceAt: string, duration: string, classStartedAt: string): number => {
   const classStartedAtMs = new Date(classStartedAt).getTime();
-  let classEndTimeMs = classStartedAtMs + parseInt(duration) * 60 * 1000;
+  const classEndTimeMs = classStartedAtMs + parseInt(duration) * 60 * 1000;
   const attendanceAtMs = new Date(attendanceAt).getTime();
   if (attendanceAtMs > classEndTimeMs) return 0;
 
