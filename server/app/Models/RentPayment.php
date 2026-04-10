@@ -13,9 +13,21 @@ class RentPayment extends Model
         'tenant_id',
         'unit_id',
         'amount',
+        'currency',
         'payment_month',
+        'stripe_session_id',
+        'stripe_payment_intent_id',
+        'payment_method',
         'status',
-        'payment_date'
+        'payment_date',
+        'paid_at',
+        'failure_reason',
+        'receipt_url',
+    ];
+
+    protected $casts = [
+        'payment_date' => 'date',
+        'paid_at' => 'datetime',
     ];
 
     public function tenant()

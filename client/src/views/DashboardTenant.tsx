@@ -1,7 +1,7 @@
-import { useEffect, useState, type CSSProperties, type FormEvent } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
+import { authFetch, clearStoredAuth, getStoredToken } from "../helpers/authApi";
 
-const API = "http://localhost:8000/api";
 const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 const GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"] as const;
 const CHAT_SYSTEM_PROMPT = `You are a helpful tenant support assistant for a property management platform called TenantSync.
@@ -51,9 +51,16 @@ type DashboardAnnouncement = {
 type DashboardPayment = {
   id: number;
   amount: number;
+  currency?: string | null;
   payment_month: string;
+  stripe_session_id?: string | null;
+  stripe_payment_intent_id?: string | null;
+  payment_method?: string | null;
   status: "paid" | "unpaid" | "pending";
   payment_date?: string | null;
+  paid_at?: string | null;
+  failure_reason?: string | null;
+  receipt_url?: string | null;
 };
 
 type DashboardUnit = {
@@ -164,6 +171,21 @@ function formatMonth(value?: string | null) {
   });
 }
 
+function formatCurrency(amount?: number | null, currency?: string | null) {
+  const safeAmount = Number(amount ?? 0);
+  const normalizedCurrency = (currency ?? "bdt").toUpperCase();
+
+  if (normalizedCurrency === "BDT") {
+    return `Tk ${safeAmount.toLocaleString()}`;
+  }
+
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: normalizedCurrency,
+    maximumFractionDigits: 2,
+  }).format(safeAmount);
+}
+
 function formatRelative(value: string) {
   const now = new Date();
   const date = new Date(value);
@@ -193,6 +215,7 @@ function complaintReplyLabel(status: DashboardComplaint["status"]) {
 
 export default function DashboardTenant() {
   const navigate = useNavigate();
+  const processedCheckoutSessionRef = useRef<string | null>(null);
   const [user, setUser] = useState<User | null>(() =>
     safeParseUser(localStorage.getItem("ts_user"))
   );
@@ -230,13 +253,49 @@ export default function DashboardTenant() {
     void loadDashboard();
   }, [user, navigate]);
 
+  useEffect(() => {
+    if (!user) {
+      return;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const checkoutStatus = params.get("payment") ?? params.get("checkout");
+    const sessionId = params.get("session_id");
+
+    if (checkoutStatus === "cancelled") {
+      clearCheckoutParams();
+      setMessage("Payment was cancelled.");
+      setError("");
+      void loadDashboard();
+      return;
+    }
+
+    if (checkoutStatus !== "success" || !sessionId) {
+      return;
+    }
+
+    if (processedCheckoutSessionRef.current === sessionId) {
+      return;
+    }
+
+    processedCheckoutSessionRef.current = sessionId;
+    void verifyPayment(sessionId);
+  }, [user]);
+
+  function clearCheckoutParams() {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("payment");
+    url.searchParams.delete("checkout");
+    url.searchParams.delete("session_id");
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  }
+
   async function loadDashboard() {
     setLoading(true);
     setError("");
 
     try {
-      const res = await fetch(`${API}/tenant/dashboard`, {
-        credentials: "include",
+      const res = await authFetch("/tenant/dashboard", {
         cache: "no-store",
       });
 
@@ -270,17 +329,14 @@ export default function DashboardTenant() {
 
   async function logout() {
     try {
-      await fetch(`${API}/auth/logout`, {
+      await authFetch("/auth/logout", {
         method: "POST",
-        credentials: "include",
       });
     } catch {
       // ignore logout failure
     }
 
-    localStorage.removeItem("ts_user");
-    localStorage.removeItem("ts_token");
-    sessionStorage.removeItem("ts_user");
+    clearStoredAuth();
     setUser(null);
     navigate("/login", { replace: true });
   }
@@ -291,24 +347,61 @@ export default function DashboardTenant() {
     setError("");
 
     try {
-      const res = await fetch(`${API}/tenant/rent-payments`, {
+      const res = await authFetch("/tenant/payments/checkout-session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({}),
       });
 
       const data = await res.json().catch(() => null);
+      const checkoutUrl = data?.url;
 
-      if (!res.ok) {
-        setError(data?.message ?? "Rent payment could not be submitted.");
+      if (res.status === 401) {
+        clearStoredAuth();
+        setUser(null);
+        navigate("/login", { replace: true });
         return;
       }
 
-      setMessage(data?.message ?? "Rent payment submitted successfully.");
-      await loadDashboard();
+      if (!res.ok || typeof checkoutUrl !== "string" || !checkoutUrl) {
+        setError(data?.error ?? data?.message ?? "Checkout session could not be created.");
+        return;
+      }
+
+      window.location.assign(checkoutUrl);
     } catch {
-      setError("Network error while submitting rent payment.");
+      setError("Network error while starting payment.");
+    } finally {
+      setIsPayingRent(false);
+    }
+  }
+
+  async function verifyPayment(sessionId: string) {
+    setIsPayingRent(true);
+    setMessage("");
+    setError("");
+
+    try {
+      const res = await authFetch(`/tenant/payments/verify?session_id=${encodeURIComponent(sessionId)}`);
+
+      const data = await res.json().catch(() => null);
+
+      if (res.status === 401) {
+        clearStoredAuth();
+        setUser(null);
+        navigate("/login", { replace: true });
+        return;
+      }
+
+      if (!res.ok) {
+        setError(data?.error ?? data?.message ?? "Could not verify payment status.");
+        return;
+      }
+
+      clearCheckoutParams();
+      await loadDashboard();
+      setMessage(data?.message ?? "Payment verification complete.");
+    } catch {
+      setError("Could not verify payment status.");
     } finally {
       setIsPayingRent(false);
     }
@@ -321,10 +414,9 @@ export default function DashboardTenant() {
     setError("");
 
     try {
-      const res = await fetch(`${API}/tenant/complaints`, {
+      const res = await authFetch("/tenant/complaints", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify(complaintForm),
       });
 
@@ -358,14 +450,13 @@ export default function DashboardTenant() {
     setError("");
 
     try {
-      const token = localStorage.getItem("ts_token");
-      const res = await fetch(`${API}/auth/change-password`, {
+      const token = getStoredToken();
+      const res = await authFetch("/auth/change-password", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        credentials: "include",
         body: JSON.stringify(passwordForm),
       });
 
@@ -452,6 +543,21 @@ export default function DashboardTenant() {
   const unit = dashboard?.unit ?? null;
   const property = dashboard?.property ?? null;
   const tenant = dashboard?.tenant ?? null;
+  const dueMonth = formatMonth(dashboard?.next_due_date?.slice(0, 7) ?? latestPayment?.payment_month);
+  const paymentAmount = formatCurrency(
+    latestPayment?.amount ?? unit?.rent_amount ?? 0,
+    latestPayment?.currency ?? "bdt"
+  );
+  const paymentStatusLabel = formatStatus(latestPayment?.status ?? "unpaid");
+  const paymentStatusStyle =
+    latestPayment?.status === "paid"
+      ? styles.badgePaid
+      : latestPayment?.status === "pending"
+        ? styles.badgePending
+        : styles.badgeWarning;
+  const receiptUrl = latestPayment?.receipt_url ?? null;
+  const paymentFailure = latestPayment?.failure_reason ?? "";
+  const paymentMethod = latestPayment?.payment_method ? formatStatus(latestPayment.payment_method) : "Stripe Checkout";
 
   const statCards = [
     {
@@ -649,8 +755,12 @@ export default function DashboardTenant() {
                   onClick={() => void payRent()}
                   disabled={isPayingRent || !unit}
                 >
-                  <span style={styles.actionTitle}>{isPayingRent ? "Processing..." : "Pay Rent"}</span>
-                  <span style={styles.actionText}>Submit your current rent update from here.</span>
+                  <span style={styles.actionTitle}>
+                    {isPayingRent ? "Processing..." : "Pay with Stripe"}
+                  </span>
+                  <span style={styles.actionText}>
+                    Open Stripe Checkout and pay your current rent from Stripe's secure hosted page.
+                  </span>
                 </button>
                 <button
                   style={{ ...styles.actionBtn, ...styles.secondaryAction }}
@@ -663,6 +773,50 @@ export default function DashboardTenant() {
                   <span style={styles.actionText}>Send a maintenance or support request instantly.</span>
                 </button>
               </div>
+            </section>
+
+            <section style={styles.panel}>
+              <div style={styles.sectionHeadRow}>
+                <div>
+                  <div style={styles.sectionBadge}>Payment Details</div>
+                  <h2 style={styles.sectionTitle}>Rent Payment</h2>
+                </div>
+                <span style={{ ...styles.badge, ...paymentStatusStyle }}>{paymentStatusLabel}</span>
+              </div>
+
+              <div style={styles.paymentInfoGrid}>
+                <div style={styles.paymentInfoCard}>
+                  <span style={styles.profileInfoLabel}>Rent Due</span>
+                  <strong style={styles.paymentInfoValue}>{dueMonth}</strong>
+                </div>
+                <div style={styles.paymentInfoCard}>
+                  <span style={styles.profileInfoLabel}>Amount</span>
+                  <strong style={styles.paymentInfoValue}>{paymentAmount}</strong>
+                </div>
+                <div style={styles.paymentInfoCard}>
+                  <span style={styles.profileInfoLabel}>Last Payment Date</span>
+                  <strong style={styles.paymentInfoValue}>
+                    {formatDate(latestPayment?.paid_at ?? latestPayment?.payment_date)}
+                  </strong>
+                </div>
+                <div style={styles.paymentInfoCard}>
+                  <span style={styles.profileInfoLabel}>Payment Method</span>
+                  <strong style={styles.paymentInfoValue}>{paymentMethod}</strong>
+                </div>
+              </div>
+
+              {receiptUrl ? (
+                <a
+                  href={receiptUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={styles.receiptLink}
+                >
+                  Open Stripe receipt
+                </a>
+              ) : null}
+
+              {paymentFailure ? <p style={styles.paymentFailureText}>{paymentFailure}</p> : null}
             </section>
 
             {showComplaintForm && (
@@ -1240,6 +1394,34 @@ const styles: Record<string, CSSProperties> = {
     gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
     gap: "12px",
     marginTop: "18px",
+  },
+  paymentInfoGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+    gap: "14px",
+  },
+  paymentInfoCard: {
+    borderRadius: "20px",
+    background: "rgba(12, 19, 38, 0.6)",
+    border: "1px solid rgba(176, 193, 227, 0.12)",
+    padding: "16px",
+  },
+  paymentInfoValue: {
+    color: "#f8fbff",
+    fontSize: "18px",
+    lineHeight: 1.5,
+  },
+  receiptLink: {
+    display: "inline-flex",
+    marginTop: "16px",
+    color: "#8fd8ff",
+    fontWeight: 700,
+    textDecoration: "none",
+  },
+  paymentFailureText: {
+    margin: "14px 0 0",
+    color: "#ffd89a",
+    lineHeight: 1.7,
   },
   input: {
     width: "100%",

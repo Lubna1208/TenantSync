@@ -36,6 +36,19 @@ class ManagerController extends Controller
         }
 
         $units = $property->units;
+        $payments = RentPayment::query()
+            ->whereHas('unit', function ($query) use ($property) {
+                $query->where('apartment_id', $property->id);
+            })
+            ->with([
+                'tenant.user',
+                'unit.apartment',
+            ])
+            ->orderByRaw("case when status = 'paid' then 0 else 1 end")
+            ->orderByDesc('paid_at')
+            ->orderByDesc('payment_date')
+            ->orderByDesc('created_at')
+            ->get();
 
         return response()->json([
             'message' => 'Manager dashboard fetched successfully',
@@ -47,6 +60,7 @@ class ManagerController extends Controller
                     'vacant_units' => $units->where('status', 'vacant')->count(),
                     'occupied_units' => $units->where('status', 'occupied')->count(),
                 ],
+                'payments' => $payments,
             ],
         ]);
     }
@@ -522,7 +536,11 @@ class ManagerController extends Controller
             [
                 'unit_id' => $tenant->unit->id,
                 'amount' => $request->amount,
+                'currency' => strtolower((string) config('services.stripe.currency', 'bdt')),
+                'payment_method' => $status === 'paid' ? 'manager_entry' : null,
                 'payment_date' => $paymentDate,
+                'paid_at' => $status === 'paid' && $paymentDate ? Carbon::parse($paymentDate)->endOfDay() : null,
+                'failure_reason' => null,
                 'status' => $status,
             ]
         );

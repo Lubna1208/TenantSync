@@ -1,13 +1,13 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 
 import ManagerHeaderPolished from "../components/manager/ManagerHeaderPolished";
 import StatsCards from "../components/manager/StatsCards";
 import ApartmentTable from "../components/manager/ApartmentTable";
+import { authFetch, clearStoredAuth } from "../helpers/authApi";
 
 import "../styles/managerDashboard.css";
 
-const API = "http://localhost:8000/api";
 const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 const GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"] as const;
 
@@ -51,6 +51,30 @@ type Property = {
   units?: Unit[];
 };
 
+type PaymentReportItem = {
+  id: number;
+  amount: number;
+  currency?: string | null;
+  payment_month: string;
+  status: "paid" | "pending" | "unpaid";
+  payment_date?: string | null;
+  paid_at?: string | null;
+  payment_method?: string | null;
+  receipt_url?: string | null;
+  tenant?: {
+    id: number;
+    user?: TenantUser | null;
+  } | null;
+  unit?: {
+    id: number;
+    unit_number: string;
+    apartment?: {
+      id: number;
+      name: string;
+    } | null;
+  } | null;
+};
+
 type DashboardResponse = {
   property: Property;
   summary: {
@@ -59,6 +83,7 @@ type DashboardResponse = {
     vacant_units: number;
     occupied_units: number;
   };
+  payments: PaymentReportItem[];
 };
 
 type ComplaintItem = {
@@ -114,6 +139,34 @@ function formatDate(value?: string | null) {
     day: "numeric",
     year: "numeric",
   });
+}
+
+function formatMonth(value?: string | null) {
+  if (!value) return "Current cycle";
+
+  const [year, month] = value.split("-");
+  const date = new Date(Number(year), Number(month) - 1, 1);
+  if (Number.isNaN(date.getTime())) return value;
+
+  return date.toLocaleDateString("en-US", {
+    month: "long",
+    year: "numeric",
+  });
+}
+
+function formatCurrency(amount?: number | null, currency?: string | null) {
+  const safeAmount = Number(amount ?? 0);
+  const normalizedCurrency = (currency ?? "bdt").toUpperCase();
+
+  if (normalizedCurrency === "BDT") {
+    return `Tk ${safeAmount.toLocaleString()}`;
+  }
+
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: normalizedCurrency,
+    maximumFractionDigits: 2,
+  }).format(safeAmount);
 }
 
 function formatRelative(value: string) {
@@ -233,13 +286,6 @@ export default function DashboardManager() {
     lease_end: "",
   });
   const [removeTenantUnitId, setRemoveTenantUnitId] = useState("");
-  const [paymentForm, setPaymentForm] = useState({
-    tenant_id: "",
-    amount: "",
-    payment_month: new Date().toISOString().slice(0, 7),
-    payment_date: new Date().toISOString().slice(0, 10),
-    status: "paid",
-  });
   const [announcementForm, setAnnouncementForm] = useState({
     title: "",
     message: "",
@@ -277,16 +323,13 @@ export default function DashboardManager() {
 
     try {
       const [dashboardRes, complaintsRes, announcementsRes] = await Promise.all([
-        fetch(`${API}/manager/dashboard`, {
-          credentials: "include",
+        authFetch("/manager/dashboard", {
           cache: "no-store",
         }),
-        fetch(`${API}/manager/complaints`, {
-          credentials: "include",
+        authFetch("/manager/complaints", {
           cache: "no-store",
         }),
-        fetch(`${API}/announcements`, {
-          credentials: "include",
+        authFetch("/announcements", {
           cache: "no-store",
         }),
       ]);
@@ -296,9 +339,7 @@ export default function DashboardManager() {
       const announcementsData = await announcementsRes.json().catch(() => null);
 
       if (dashboardRes.status === 401 || complaintsRes.status === 401 || announcementsRes.status === 401) {
-        localStorage.removeItem("ts_user");
-        localStorage.removeItem("ts_token");
-        sessionStorage.removeItem("ts_user");
+        clearStoredAuth();
         setUser(null);
         navigate("/login");
         return;
@@ -332,17 +373,14 @@ export default function DashboardManager() {
 
   async function logout() {
     try {
-      await fetch(`${API}/auth/logout`, {
+      await authFetch("/auth/logout", {
         method: "POST",
-        credentials: "include",
       });
     } catch {
       // ignore logout API error
     }
 
-    localStorage.removeItem("ts_user");
-    localStorage.removeItem("ts_token");
-    sessionStorage.removeItem("ts_user");
+    clearStoredAuth();
     setUser(null);
     navigate("/login");
   }
@@ -384,10 +422,9 @@ export default function DashboardManager() {
     clearNotice();
 
     try {
-      const res = await fetch(`${API}/manager/units`, {
+      const res = await authFetch("/manager/units", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify({
           ...unitForm,
           rent_amount: Number(unitForm.rent_amount),
@@ -424,12 +461,11 @@ export default function DashboardManager() {
     }
 
     try {
-      const res = await fetch(
-        `${API}/manager/units/${tenantForm.unit_id}/assign-tenant`,
+      const res = await authFetch(
+        `/manager/units/${tenantForm.unit_id}/assign-tenant`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          credentials: "include",
           body: JSON.stringify({
             ...tenantForm,
             password_confirmation: tenantForm.password,
@@ -474,9 +510,8 @@ export default function DashboardManager() {
     }
 
     try {
-      const res = await fetch(`${API}/manager/units/${removeTenantUnitId}/tenant`, {
+      const res = await authFetch(`/manager/units/${removeTenantUnitId}/tenant`, {
         method: "DELETE",
-        credentials: "include",
       });
 
       const data = await res.json().catch(() => null);
@@ -498,10 +533,9 @@ export default function DashboardManager() {
     clearNotice();
 
     try {
-      const res = await fetch(`${API}/manager/complaints/${id}`, {
+      const res = await authFetch(`/manager/complaints/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify({ status }),
       });
 
@@ -519,56 +553,14 @@ export default function DashboardManager() {
     }
   }
 
-  async function savePayment(e: FormEvent) {
-    e.preventDefault();
-    clearNotice();
-
-    if (!paymentForm.tenant_id) {
-      setFailure("Choose a tenant before saving a payment.", "payment");
-      return;
-    }
-
-    try {
-      const res = await fetch(`${API}/manager/rent-payments`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          tenant_id: Number(paymentForm.tenant_id),
-          amount: Number(paymentForm.amount),
-          payment_month: paymentForm.payment_month,
-          payment_date: paymentForm.payment_date || null,
-          status: paymentForm.status,
-        }),
-      });
-
-      const data = await res.json().catch(() => null);
-
-      if (!res.ok) {
-        setFailure(getFailureMessage(data, "Rent payment could not be saved."), "payment");
-        return;
-      }
-
-      setPaymentForm((current) => ({
-        ...current,
-        tenant_id: "",
-        amount: "",
-      }));
-      setSuccess(data?.message ?? "Rent payment saved successfully.", "payment");
-    } catch {
-      setFailure("Network error while saving rent payment.", "payment");
-    }
-  }
-
   async function publishAnnouncement(e: FormEvent) {
     e.preventDefault();
     clearNotice();
 
     try {
-      const res = await fetch(`${API}/manager/announcements`, {
+      const res = await authFetch("/manager/announcements", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify(announcementForm),
       });
 
@@ -647,10 +639,9 @@ Write the reply now:`;
     clearNotice();
 
     try {
-      const res = await fetch(`${API}/manager/complaints/${complaint.id}/reply`, {
+      const res = await authFetch(`/manager/complaints/${complaint.id}/reply`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify({ manager_reply: managerReply }),
       });
 
@@ -690,28 +681,7 @@ Write the reply now:`;
 
   const property = dashboard?.property ?? null;
   const units = property?.units ?? [];
-  const tenants = useMemo(
-    () =>
-      units
-        .map((unit) => {
-          const activeTenant = unit.tenants?.find((tenant) => tenant.unit_id !== null);
-
-          if (!activeTenant?.user) {
-            return null;
-          }
-
-          return {
-            tenantId: activeTenant.id,
-            unitId: unit.id,
-            unitNumber: unit.unit_number,
-            name: activeTenant.user.name,
-            email: activeTenant.user.email,
-            rentAmount: Number(unit.rent_amount ?? 0),
-          };
-        })
-        .filter((value): value is NonNullable<typeof value> => value !== null),
-    [units]
-  );
+  const paymentReport = dashboard?.payments ?? [];
 
   if (!user) return null;
 
@@ -795,6 +765,7 @@ Write the reply now:`;
   const actionNotice = noticeContext === "actions" ? noticeText : "";
   const communicationNotice = noticeContext === "communication" ? noticeText : "";
   const paymentNotice = noticeContext === "payment" ? noticeText : "";
+  const paidPaymentsCount = paymentReport.filter((payment) => payment.status === "paid").length;
 
   return (
     <div className="manager-dashboard">
@@ -1294,8 +1265,8 @@ Write the reply now:`;
         <section className="payment-section" ref={paymentSectionRef}>
           <div className="payment-section-header">
             <div className="payment-section-badge">Rent Payments</div>
-            <h3>Record Rent Payment</h3>
-            <p>Keep rent payment updates in one final section at the bottom of the manager console.</p>
+            <h3>Saved Payment Report</h3>
+            <p>Review the latest tenant rent payments for this property in one clean report feed.</p>
           </div>
 
           {paymentNotice && (
@@ -1304,97 +1275,81 @@ Write the reply now:`;
             </div>
           )}
 
-          <form className="dashboard-panel dashboard-side-panel manager-form payment-form" onSubmit={savePayment}>
-            <label className="manager-field-group">
-              <span className="manager-form-label">Tenant</span>
-              <select
-                className="manager-input manager-select-input"
-                value={paymentForm.tenant_id}
-                onChange={(e) => {
-                  const selectedTenant = tenants.find(
-                    (item) => String(item.tenantId) === e.target.value
-                  );
+          <div className="dashboard-panel payment-report-panel">
+            <div className="table-header-row">
+              <h3>Saved Payment Report</h3>
+              <span style={{ color: "#9cb8d0", fontSize: "13px", fontWeight: 600 }}>
+                {paidPaymentsCount} paid, {paymentReport.length} total
+              </span>
+            </div>
 
-                  setPaymentForm((current) => ({
-                    ...current,
-                    tenant_id: e.target.value,
-                    amount: selectedTenant ? String(selectedTenant.rentAmount) : current.amount,
-                  }));
-                }}
-              >
-                <option value="">Choose tenant</option>
-                {tenants.map((tenant) => (
-                  <option key={tenant.tenantId} value={tenant.tenantId}>
-                    {tenant.name} - Unit {tenant.unitNumber}
-                  </option>
+            {!property ? (
+              <p className="empty-text">Assign a property first to see rent payment reports.</p>
+            ) : loading ? (
+              <p className="empty-text">Loading payment reports...</p>
+            ) : paymentReport.length === 0 ? (
+              <p className="empty-text">No rent payment records have been saved for this property yet.</p>
+            ) : (
+              <div className="payment-report-list">
+                {paymentReport.map((payment) => (
+                  <article key={payment.id} className="payment-report-card">
+                    <div className="payment-report-top">
+                      <div className="payment-report-copy">
+                        <h4>{payment.tenant?.user?.name ?? "Tenant payment"}</h4>
+                        <p className="payment-report-subtitle">
+                          {payment.unit?.apartment?.name ?? property?.name ?? "Assigned property"} • Unit{" "}
+                          {payment.unit?.unit_number ?? "-"}
+                        </p>
+                      </div>
+                      <div className="payment-report-meta">
+                        <span
+                          className={`status-badge ${
+                            payment.status === "paid"
+                              ? "resolved"
+                              : payment.status === "pending"
+                                ? "in-progress"
+                                : "pending"
+                          }`}
+                        >
+                          {titleCase(payment.status)}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="payment-report-grid">
+                      <div className="payment-report-stat">
+                        <span className="payment-report-label">Month</span>
+                        <strong>{formatMonth(payment.payment_month)}</strong>
+                      </div>
+                      <div className="payment-report-stat">
+                        <span className="payment-report-label">Amount</span>
+                        <strong>{formatCurrency(payment.amount, payment.currency)}</strong>
+                      </div>
+                      <div className="payment-report-stat">
+                        <span className="payment-report-label">Paid Date</span>
+                        <strong>{formatDate(payment.paid_at ?? payment.payment_date)}</strong>
+                      </div>
+                      <div className="payment-report-stat">
+                        <span className="payment-report-label">Method</span>
+                        <strong>{titleCase(payment.payment_method ?? "stripe_checkout")}</strong>
+                      </div>
+                    </div>
+
+                    {payment.receipt_url ? (
+                      <a
+                        href={payment.receipt_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="payment-report-link"
+                      >
+                        Open Stripe receipt
+                      </a>
+                    ) : null}
+                  </article>
                 ))}
-              </select>
-            </label>
-            <label className="manager-field-group">
-              <span className="manager-form-label">Payment Month</span>
-              <input
-                className="manager-input manager-month-input"
-                type="month"
-                value={paymentForm.payment_month}
-                onChange={(e) =>
-                  setPaymentForm((current) => ({
-                    ...current,
-                    payment_month: e.target.value,
-                  }))
-                }
-              />
-            </label>
-            <label className="manager-field-group">
-              <span className="manager-form-label">Amount</span>
-              <input
-                className="manager-input"
-                type="number"
-                min="0"
-                placeholder="Enter amount"
-                value={paymentForm.amount}
-                onChange={(e) =>
-                  setPaymentForm((current) => ({
-                    ...current,
-                    amount: e.target.value,
-                  }))
-                }
-              />
-            </label>
-            <label className="manager-field-group">
-              <span className="manager-form-label">Payment Date</span>
-              <input
-                className="manager-input manager-date-input"
-                type="date"
-                value={paymentForm.payment_date}
-                onChange={(e) =>
-                  setPaymentForm((current) => ({
-                    ...current,
-                    payment_date: e.target.value,
-                  }))
-                }
-              />
-            </label>
-            <label className="manager-field-group">
-              <span className="manager-form-label">Status</span>
-              <select
-                className="manager-input manager-select-input"
-                value={paymentForm.status}
-                onChange={(e) =>
-                  setPaymentForm((current) => ({
-                    ...current,
-                    status: e.target.value,
-                  }))
-                }
-              >
-                <option value="paid">Paid</option>
-                <option value="pending">Pending</option>
-                <option value="unpaid">Unpaid</option>
-              </select>
-            </label>
-            <button className="action-btn" type="submit" disabled={!property}>
-              Save Payment
-            </button>
-          </form>
+              </div>
+            )}
+          </div>
         </section>
       </div>
     </div>

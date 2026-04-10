@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-
-const API = "http://localhost:8000/api";
+import { authFetch, clearStoredAuth } from "../helpers/authApi";
 
 type User = {
   id: number;
@@ -228,18 +227,16 @@ export default function Dashboard() {
 
     try {
       const [propertiesRes, managersRes] = await Promise.all([
-        fetch(`${API}/owner/properties`, {
-          credentials: "include",
+        authFetch("/owner/properties", {
           cache: "no-store",
         }),
-        fetch(`${API}/owner/managers`, {
-          credentials: "include",
+        authFetch("/owner/managers", {
           cache: "no-store",
         }),
       ]);
 
       if (!propertiesRes.ok || !managersRes.ok) {
-        localStorage.removeItem("ts_user");
+        clearStoredAuth();
         setUser(null);
         navigate("/login", { replace: true });
         return;
@@ -261,16 +258,14 @@ export default function Dashboard() {
 
   async function logout() {
     try {
-      await fetch(`${API}/auth/logout`, {
+      await authFetch("/auth/logout", {
         method: "POST",
-        credentials: "include",
       });
     } catch {
       // ignore network error
     }
 
-    localStorage.removeItem("ts_user");
-    localStorage.removeItem("ts_token");
+    clearStoredAuth();
     setUser(null);
     navigate("/login", { replace: true });
   }
@@ -298,10 +293,9 @@ export default function Dashboard() {
     clearNotice();
 
     try {
-      const res = await fetch(`${API}/owner/managers`, {
+      const res = await authFetch("/owner/managers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify(managerForm),
       });
 
@@ -330,10 +324,9 @@ export default function Dashboard() {
     clearNotice();
 
     try {
-      const res = await fetch(`${API}/owner/properties`, {
+      const res = await authFetch("/owner/properties", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify({
           ...propertyForm,
           total_units: Number(propertyForm.total_units),
@@ -367,9 +360,8 @@ export default function Dashboard() {
     clearNotice();
 
     try {
-      const res = await fetch(`${API}/owner/managers/${id}`, {
+      const res = await authFetch(`/owner/managers/${id}`, {
         method: "DELETE",
-        credentials: "include",
       });
 
       const data = await parseResponse<{ message?: string }>(res);
@@ -390,9 +382,8 @@ export default function Dashboard() {
     clearNotice();
 
     try {
-      const res = await fetch(`${API}/owner/properties/${id}`, {
+      const res = await authFetch(`/owner/properties/${id}`, {
         method: "DELETE",
-        credentials: "include",
       });
 
       const data = await parseResponse<{ message?: string }>(res);
@@ -413,10 +404,9 @@ export default function Dashboard() {
     clearNotice();
 
     try {
-      const res = await fetch(`${API}/owner/properties/${propertyId}/manager`, {
+      const res = await authFetch(`/owner/properties/${propertyId}/manager`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify({
           manager_id: managerId ? Number(managerId) : null,
         }),

@@ -2,8 +2,7 @@ import { useEffect, useState } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import "./Landing.css";
 import logo from "../assets/logo.png";
-
-const API = "http://localhost:8000/api";
+import { apiUrl, authFetch } from "../helpers/authApi";
 
 type User = {
   id: number;
@@ -93,7 +92,7 @@ export default function Landing() {
     setIsSubmitting(true);
 
     try {
-      const res = await fetch(`${API}/auth/login`, {
+      const res = await fetch(apiUrl("/auth/login"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -114,9 +113,8 @@ export default function Landing() {
           : null;
 
       if (!user) {
-        const meRes = await fetch(`${API}/auth/me`, {
+        const meRes = await authFetch("/auth/me", {
           method: "GET",
-          credentials: "include",
           cache: "no-store",
         });
 
