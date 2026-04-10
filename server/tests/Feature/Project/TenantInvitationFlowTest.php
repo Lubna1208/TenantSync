@@ -47,9 +47,11 @@ class TenantInvitationFlowTest extends TestCase
             'is_used' => false,
         ]);
 
-        $invitationUrl = $response->json('invitation.invitation_url');
+        $invitationUrl = null;
 
-        Mail::assertSent(TenantInvitationMail::class, function (TenantInvitationMail $mail) {
+        Mail::assertSent(TenantInvitationMail::class, function (TenantInvitationMail $mail) use (&$invitationUrl) {
+            $invitationUrl = $mail->invitationUrl;
+
             return $mail->hasTo('rahim@tenantsync.test');
         });
 
