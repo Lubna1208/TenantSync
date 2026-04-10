@@ -118,6 +118,8 @@ abstract class TestCase extends BaseTestCase
                 $table->string('category')->nullable();
                 $table->string('priority')->nullable();
                 $table->string('status')->default('open');
+                $table->text('manager_reply')->nullable();
+                $table->timestamp('manager_reply_sent_at')->nullable();
                 $table->timestamps();
             });
         }
