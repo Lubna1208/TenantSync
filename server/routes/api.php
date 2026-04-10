@@ -11,11 +11,14 @@ use App\Http\Controllers\AnnouncementController;
 use App\Http\Controllers\OwnerController;
 use App\Http\Controllers\ManagerController;
 use App\Http\Controllers\StripePaymentController;
+use App\Http\Controllers\TenantInvitationController;
 
 Route::post('/auth/register', [AuthController::class, 'register']);
 Route::post('/auth/login', [AuthController::class, 'login']);
 Route::post('/auth/logout', [AuthController::class, 'logout'])->middleware(['jwt.cookie']);
 Route::post('/auth/refresh', [AuthController::class, 'refresh'])->middleware(['jwt.cookie']);
+Route::get('/tenant-invitations/{token}', [TenantInvitationController::class, 'show']);
+Route::post('/tenant-invitations/{token}/accept', [TenantInvitationController::class, 'accept']);
 
 
 Route::middleware(['jwt.cookie', 'auth.api.user'])->group(function () {

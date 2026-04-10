@@ -24,6 +24,7 @@ type TenantUser = {
   id: number;
   name: string;
   email: string;
+  status?: string;
 };
 
 type TenantRecord = {
@@ -115,6 +116,13 @@ type AnnouncementItem = {
 };
 
 type NoticeContext = "general" | "actions" | "communication" | "payment";
+
+type AssignTenantResponse = {
+  message?: string;
+  invitation?: {
+    invitation_url?: string | null;
+  } | null;
+};
 
 function safeParseUser(raw: string | null): User | null {
   if (!raw) return null;
@@ -269,6 +277,7 @@ export default function DashboardManager() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [noticeContext, setNoticeContext] = useState<NoticeContext>("general");
+  const [invitePreviewUrl, setInvitePreviewUrl] = useState("");
   const [unitForm, setUnitForm] = useState({
     unit_number: "",
     floor: "",
@@ -279,7 +288,6 @@ export default function DashboardManager() {
     unit_id: "",
     name: "",
     email: "",
-    password: "",
     date_of_birth: "",
     move_in_date: "",
     lease_start: "",
@@ -389,6 +397,7 @@ export default function DashboardManager() {
     setMessage("");
     setError("");
     setNoticeContext("general");
+    setInvitePreviewUrl("");
   }
 
   function setSuccess(text: string, context: NoticeContext = "general") {
@@ -468,7 +477,6 @@ export default function DashboardManager() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             ...tenantForm,
-            password_confirmation: tenantForm.password,
             date_of_birth: tenantForm.date_of_birth || null,
             move_in_date: tenantForm.move_in_date || null,
             lease_start: tenantForm.lease_start || null,
@@ -488,13 +496,15 @@ export default function DashboardManager() {
         unit_id: "",
         name: "",
         email: "",
-        password: "",
         date_of_birth: "",
         move_in_date: "",
         lease_start: "",
         lease_end: "",
       });
-      setSuccess(data?.message ?? "Tenant assigned successfully.", "actions");
+      setInvitePreviewUrl(
+        ((data as AssignTenantResponse | null)?.invitation?.invitation_url ?? "").trim()
+      );
+      setSuccess(data?.message ?? "Tenant invitation sent successfully.", "actions");
       await loadDashboard();
     } catch {
       setFailure("Network error while assigning tenant.", "actions");
@@ -681,6 +691,14 @@ Write the reply now:`;
 
   const property = dashboard?.property ?? null;
   const units = property?.units ?? [];
+  const assignableUnits = units.filter((unit) => {
+    if (unit.status === "vacant") {
+      return true;
+    }
+
+    const activeTenant = unit.tenants?.find((tenant) => tenant.unit_id !== null);
+    return activeTenant?.user?.status === "inactive";
+  });
   const paymentReport = dashboard?.payments ?? [];
 
   if (!user) return null;
@@ -867,16 +885,24 @@ Write the reply now:`;
           </div>
 
           {actionNotice && (
-            <div className={`manager-alert manager-section-alert ${noticeTone}`}>
-              {actionNotice}
-            </div>
+            <>
+              <div className={`manager-alert manager-section-alert ${noticeTone}`}>
+                {actionNotice}
+              </div>
+              {invitePreviewUrl ? (
+                <div className="manager-alert manager-section-alert success">
+                  Invitation link for local testing: {invitePreviewUrl}
+                </div>
+              ) : null}
+            </>
           )}
 
           <div className="manager-actions-grid">
             <form className="dashboard-panel dashboard-side-panel manager-form assign-tenant-form" onSubmit={assignTenant}>
-              <h3>Assign Tenant</h3>
+              <h3>Send Tenant Invitation</h3>
+              <p className="manager-form-subtitle">Save the tenant details and email an invitation so the tenant can set a password securely.</p>
               <label className="manager-field-group">
-                <span className="manager-form-label">Vacant Unit</span>
+                <span className="manager-form-label">Unit</span>
                 <select
                   className="manager-input manager-select-input"
                   value={tenantForm.unit_id}
@@ -887,10 +913,8 @@ Write the reply now:`;
                     }))
                   }
                 >
-                  <option value="">Choose vacant unit</option>
-                  {units
-                    .filter((unit) => unit.status === "vacant")
-                    .map((unit) => (
+                  <option value="">Choose unit</option>
+                  {assignableUnits.map((unit) => (
                       <option key={unit.id} value={unit.id}>
                         {unit.unit_number}
                       </option>
@@ -917,21 +941,6 @@ Write the reply now:`;
                   value={tenantForm.email}
                   onChange={(e) =>
                     setTenantForm((current) => ({ ...current, email: e.target.value }))
-                  }
-                />
-              </label>
-              <label className="manager-field-group">
-                <span className="manager-form-label">Password</span>
-                <input
-                  className="manager-input"
-                  placeholder="Enter password"
-                  type="password"
-                  value={tenantForm.password}
-                  onChange={(e) =>
-                    setTenantForm((current) => ({
-                      ...current,
-                      password: e.target.value,
-                    }))
                   }
                 />
               </label>
@@ -980,7 +989,7 @@ Write the reply now:`;
                 </label>
               </div>
               <button className="action-btn" type="submit" disabled={!property}>
-                Assign Tenant
+                Send Invitation
               </button>
             </form>
 

@@ -2,18 +2,24 @@
 
 namespace App\Http\Controllers;
 
+use App\Mail\TenantInvitationMail;
 use App\Models\Announcement;
 use App\Models\Apartment;
 use App\Models\Complaint;
 use App\Models\RentPayment;
 use App\Models\Tenant;
+use App\Models\TenantInvitation;
 use App\Models\Unit;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 
 class ManagerController extends Controller
 {
@@ -216,10 +222,31 @@ class ManagerController extends Controller
             ], 404);
         }
 
+        $assignedTenant = $unit->tenants()
+            ->whereNotNull('unit_id')
+            ->with('user')
+            ->first();
+
+        $reusableInvitationUserId = null;
+
+        if (
+            $assignedTenant &&
+            $assignedTenant->user &&
+            $assignedTenant->user->status === 'inactive' &&
+            strcasecmp($assignedTenant->user->email, (string) $request->email) === 0
+        ) {
+            $reusableInvitationUserId = $assignedTenant->user->id;
+        }
+
         $validator = Validator::make($request->all(), [
             'name' => 'required|string|max:255',
-            'email' => 'required|email|max:255|unique:users,email',
-            'password' => 'required|string|min:6|confirmed',
+            'email' => [
+                'required',
+                'email',
+                'max:255',
+                Rule::unique('users', 'email')->ignore($reusableInvitationUserId),
+            ],
+            'password' => 'nullable|string|min:6|confirmed',
             'date_of_birth' => 'nullable|date',
             'move_in_date' => 'nullable|date',
             'lease_start' => 'nullable|date',
@@ -233,41 +260,78 @@ class ManagerController extends Controller
             ], 422);
         }
 
-        if ($unit->tenants()->whereNotNull('unit_id')->exists()) {
+        if ($request->filled('password')) {
+            if ($assignedTenant) {
+                return response()->json([
+                    'message' => 'This unit already has a tenant assigned.',
+                ], 422);
+            }
+
+            DB::transaction(function () use ($request, $unit, $manager) {
+                $tenantUser = User::create([
+                    'name' => $request->name,
+                    'email' => $request->email,
+                    'date_of_birth' => $request->date_of_birth,
+                    'password' => Hash::make($request->password),
+                    'role' => 'tenant',
+                    'status' => 'active',
+                    'created_by' => $manager->id,
+                ]);
+
+                Tenant::create([
+                    'user_id' => $tenantUser->id,
+                    'unit_id' => $unit->id,
+                    'move_in_date' => $request->move_in_date,
+                    'lease_start' => $request->lease_start,
+                    'lease_end' => $request->lease_end,
+                ]);
+
+                $unit->update([
+                    'status' => 'occupied',
+                ]);
+            });
+
+            $unit->load('tenants.user');
+
+            return response()->json([
+                'message' => 'Tenant assigned successfully',
+                'data' => $unit,
+            ], 201);
+        }
+
+        if (
+            $assignedTenant &&
+            (
+                ! $assignedTenant->user ||
+                $assignedTenant->user->status !== 'inactive' ||
+                strcasecmp($assignedTenant->user->email, $request->email) !== 0
+            )
+        ) {
             return response()->json([
                 'message' => 'This unit already has a tenant assigned.',
             ], 422);
         }
 
-        DB::transaction(function () use ($request, $unit, $manager) {
-            $tenantUser = User::create([
-                'name' => $request->name,
-                'email' => $request->email,
-                'date_of_birth' => $request->date_of_birth,
-                'password' => Hash::make($request->password),
-                'role' => 'tenant',
-                'status' => 'active',
-                'created_by' => $manager->id,
-            ]);
-
-            Tenant::create([
-                'user_id' => $tenantUser->id,
-                'unit_id' => $unit->id,
-                'move_in_date' => $request->move_in_date,
-                'lease_start' => $request->lease_start,
-                'lease_end' => $request->lease_end,
-            ]);
-
-            $unit->update([
-                'status' => 'occupied',
-            ]);
-        });
+        [$invitation, $invitationUrl, $mailDelivered] = $this->createOrRefreshTenantInvitation(
+            $request,
+            $unit,
+            $manager,
+            $assignedTenant
+        );
 
         $unit->load('tenants.user');
 
         return response()->json([
-            'message' => 'Tenant assigned successfully',
+            'message' => $assignedTenant
+                ? 'Tenant invitation resent successfully'
+                : 'Tenant invitation sent successfully',
             'data' => $unit,
+            'invitation' => [
+                'email' => $invitation->email,
+                'expires_at' => optional($invitation->expires_at)->toIso8601String(),
+                'invitation_url' => ! $mailDelivered && config('app.debug') ? $invitationUrl : null,
+                'mail_delivered' => $mailDelivered,
+            ],
         ], 201);
     }
 
@@ -593,5 +657,105 @@ class ManagerController extends Controller
         return Apartment::query()
             ->where('manager_id', $managerId)
             ->first();
+    }
+
+    private function createOrRefreshTenantInvitation(Request $request, Unit $unit, User $manager, ?Tenant $existingTenant = null): array
+    {
+        $plainToken = Str::random(64);
+        $hashedToken = hash('sha256', $plainToken);
+        $expiresAt = Carbon::now()->addDay();
+        $placeholderPassword = Hash::make(Str::random(40));
+
+        $invitation = DB::transaction(function () use (
+            $request,
+            $unit,
+            $manager,
+            $existingTenant,
+            $placeholderPassword,
+            $hashedToken,
+            $expiresAt
+        ) {
+            if ($existingTenant && $existingTenant->user) {
+                $tenantUser = $existingTenant->user;
+
+                $tenantUser->update([
+                    'name' => $request->name,
+                    'email' => $request->email,
+                    'date_of_birth' => $request->date_of_birth,
+                    'password' => $placeholderPassword,
+                    'status' => 'inactive',
+                    'created_by' => $manager->id,
+                ]);
+
+                $existingTenant->update([
+                    'unit_id' => $unit->id,
+                    'move_in_date' => $request->move_in_date,
+                    'lease_start' => $request->lease_start,
+                    'lease_end' => $request->lease_end,
+                ]);
+
+                TenantInvitation::query()
+                    ->where('user_id', $tenantUser->id)
+                    ->where('is_used', false)
+                    ->update([
+                        'is_used' => true,
+                        'used_at' => Carbon::now(),
+                    ]);
+
+                $tenant = $existingTenant;
+            } else {
+                $tenantUser = User::create([
+                    'name' => $request->name,
+                    'email' => $request->email,
+                    'date_of_birth' => $request->date_of_birth,
+                    'password' => $placeholderPassword,
+                    'role' => 'tenant',
+                    'status' => 'inactive',
+                    'created_by' => $manager->id,
+                ]);
+
+                $tenant = Tenant::create([
+                    'user_id' => $tenantUser->id,
+                    'unit_id' => $unit->id,
+                    'move_in_date' => $request->move_in_date,
+                    'lease_start' => $request->lease_start,
+                    'lease_end' => $request->lease_end,
+                ]);
+            }
+
+            $unit->update([
+                'status' => 'occupied',
+            ]);
+
+            return TenantInvitation::create([
+                'user_id' => $tenantUser->id,
+                'tenant_id' => $tenant->id,
+                'unit_id' => $unit->id,
+                'invited_by' => $manager->id,
+                'email' => $request->email,
+                'token_hash' => $hashedToken,
+                'expires_at' => $expiresAt,
+                'is_used' => false,
+                'last_sent_at' => Carbon::now(),
+            ])->fresh(['user', 'unit.apartment', 'inviter']);
+        });
+
+        $invitationUrl = rtrim((string) config('app.frontend_url'), '/') . '/invite/' . $plainToken;
+
+        $mailDelivered = true;
+
+        try {
+            Mail::to($invitation->email)->send(new TenantInvitationMail($invitation, $invitationUrl));
+        } catch (\Throwable $exception) {
+            $mailDelivered = false;
+
+            Log::warning('Tenant invitation email delivery failed.', [
+                'email' => $invitation->email,
+                'invitation_id' => $invitation->id,
+                'error' => $exception->getMessage(),
+            ]);
+        }
+
+        return [$invitation, $invitationUrl, $mailDelivered];
     }
 }

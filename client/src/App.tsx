@@ -4,6 +4,7 @@ import Landing from "./views/Landing";
 import Dashboard from "./views/Dashboard";
 import DashboardManager from "./views/DashboardManager";
 import DashboardTenant from "./views/DashboardTenant";
+import AcceptTenantInvitation from "./views/AcceptTenantInvitation";
 import { authFetch, clearStoredAuth } from "./helpers/authApi";
 
 type User = {
@@ -168,6 +169,8 @@ export default function App() {
             </ProtectedRoute>
           }
         />
+
+        <Route path="/invite/:token" element={<AcceptTenantInvitation />} />
 
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
