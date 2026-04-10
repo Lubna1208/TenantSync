@@ -98,7 +98,10 @@ jobs:
       - name: Run Laravel smoke checks
         run: |
           php artisan route:list
-          php artisan test --testsuite=Unit
+          php artisan test --testsuite=Smoke
+
+      - name: Run Laravel auth and role flow checks
+        run: php artisan test --testsuite=ProjectFeature
 
   frontend:
     runs-on: ubuntu-latest
@@ -127,6 +130,9 @@ jobs:
 
       - name: Lint frontend
         run: npm run lint
+
+      - name: Run frontend smoke tests
+        run: npm run test:smoke
 
       - name: Build frontend
         run: npm run build
