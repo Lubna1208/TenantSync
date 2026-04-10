@@ -17,6 +17,12 @@ class Complaint extends Model
         'category',
         'priority',
         'status',
+        'manager_reply',
+        'manager_reply_sent_at',
+    ];
+
+    protected $casts = [
+        'manager_reply_sent_at' => 'datetime',
     ];
 
     public function tenant()

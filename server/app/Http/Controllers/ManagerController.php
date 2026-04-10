@@ -9,6 +9,7 @@ use App\Models\RentPayment;
 use App\Models\Tenant;
 use App\Models\Unit;
 use App\Models\User;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -420,6 +421,52 @@ class ManagerController extends Controller
 
         return response()->json([
             'message' => 'Complaint updated successfully',
+            'data' => $complaint->fresh(['tenant.user', 'unit']),
+        ]);
+    }
+
+    public function sendComplaintReply(Request $request, $id)
+    {
+        $manager = auth('api')->user();
+        $property = $this->assignedProperty($manager->id);
+
+        if (! $property) {
+            return response()->json([
+                'message' => 'No property is assigned to this manager yet.',
+            ], 422);
+        }
+
+        $complaint = Complaint::query()
+            ->whereHas('unit', function ($query) use ($property) {
+                $query->where('apartment_id', $property->id);
+            })
+            ->with(['tenant.user', 'unit'])
+            ->find($id);
+
+        if (! $complaint) {
+            return response()->json([
+                'message' => 'Complaint not found',
+            ], 404);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'manager_reply' => 'required|string',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'message' => 'Validation failed',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $complaint->update([
+            'manager_reply' => trim($request->manager_reply),
+            'manager_reply_sent_at' => Carbon::now(),
+        ]);
+
+        return response()->json([
+            'message' => 'Reply sent to tenant successfully',
             'data' => $complaint->fresh(['tenant.user', 'unit']),
         ]);
     }

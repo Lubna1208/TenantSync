@@ -41,6 +41,7 @@ Route::middleware(['jwt.cookie', 'auth.api.user'])->group(function () {
         Route::delete('/units/{id}/tenant', [ManagerController::class, 'removeTenant']);
         Route::get('/complaints', [ManagerController::class, 'complaints']);
         Route::patch('/complaints/{id}', [ManagerController::class, 'updateComplaint']);
+        Route::post('/complaints/{id}/reply', [ManagerController::class, 'sendComplaintReply']);
         Route::post('/rent-payments', [ManagerController::class, 'storeRentPayment']);
         Route::post('/announcements', [ManagerController::class, 'storeAnnouncement']);
     });

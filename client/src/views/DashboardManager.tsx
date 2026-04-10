@@ -8,6 +8,8 @@ import ApartmentTable from "../components/manager/ApartmentTable";
 import "../styles/managerDashboard.css";
 
 const API = "http://localhost:8000/api";
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+const GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"] as const;
 
 type User = {
   id: number;
@@ -66,6 +68,8 @@ type ComplaintItem = {
   category?: string | null;
   priority?: string | null;
   status: "open" | "in_progress" | "resolved";
+  manager_reply?: string | null;
+  manager_reply_sent_at?: string | null;
   created_at: string;
   unit?: {
     id: number;
@@ -161,6 +165,38 @@ function getFailureMessage(
   return message || fallback;
 }
 
+async function generateGeminiText(prompt: string) {
+  let lastErrorMessage = "Gemini API request failed.";
+
+  for (const model of GEMINI_MODELS) {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+        }),
+      }
+    );
+
+    const data = await res.json().catch(() => null);
+    const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+    if (res.ok && reply) {
+      return reply;
+    }
+
+    lastErrorMessage = data?.error?.message ?? lastErrorMessage;
+
+    if (res.status !== 503) {
+      break;
+    }
+  }
+
+  throw new Error(lastErrorMessage);
+}
+
 export default function DashboardManager() {
   const navigate = useNavigate();
   const unitOverviewRef = useRef<HTMLElement | null>(null);
@@ -209,6 +245,9 @@ export default function DashboardManager() {
     message: "",
     target_role: "tenant",
   });
+  const [replyMap, setReplyMap] = useState<Record<number, string>>({});
+  const [generatingId, setGeneratingId] = useState<number | null>(null);
+  const [sendingReplyId, setSendingReplyId] = useState<number | null>(null);
 
   useEffect(() => {
     if (!user) {
@@ -549,6 +588,103 @@ export default function DashboardManager() {
       setSuccess(data?.message ?? "Announcement published successfully.", "communication");
     } catch {
       setFailure("Network error while publishing announcement.", "communication");
+    }
+  }
+
+  async function generateReply(complaint: ComplaintItem) {
+    setGeneratingId(complaint.id);
+
+    const statusDirection =
+      complaint.status === "resolved"
+        ? "The complaint is already resolved. Confirm the issue has been resolved, thank the tenant for their patience, and invite them to reopen or contact management if anything remains unresolved."
+        : complaint.status === "in_progress"
+          ? "The complaint is currently in progress. Acknowledge the issue, explain that work is underway, and reassure the tenant that the team will keep them updated."
+          : "The complaint is newly open. Acknowledge receipt, explain that the team is reviewing it, and set expectations that the tenant will receive another update soon.";
+
+    const prompt = `You are a professional property manager writing a reply to a tenant complaint.
+Write a concise, empathetic, and professional response (3-5 sentences max).
+Do not use placeholders like [Your Name]. Sign off as "The Management Team".
+Match the tone and content to the complaint status.
+
+Status-specific guidance: ${statusDirection}
+
+Complaint Title: ${complaint.title}
+Category: ${complaint.category ?? "General"}
+Priority: ${complaint.priority ?? "Medium"}
+Description: ${complaint.description}
+Current Status: ${complaint.status}
+
+Write the reply now:`;
+
+    try {
+      if (!GEMINI_API_KEY) {
+        throw new Error("Gemini API key is missing.");
+      }
+
+      const reply = await generateGeminiText(prompt);
+      setReplyMap((prev) => ({ ...prev, [complaint.id]: reply }));
+    } catch (err) {
+      const fallback =
+        err instanceof Error && err.message === "Gemini API key is missing."
+          ? "Gemini API key is missing. Add VITE_GEMINI_API_KEY in client/.env."
+          : "Error generating reply. Please try again.";
+
+      setReplyMap((prev) => ({ ...prev, [complaint.id]: fallback }));
+    } finally {
+      setGeneratingId(null);
+    }
+  }
+
+  async function sendReplyToTenant(complaint: ComplaintItem) {
+    const managerReply = replyMap[complaint.id]?.trim();
+
+    if (!managerReply) {
+      setFailure("Generate or write a reply before sending it to the tenant.", "communication");
+      return;
+    }
+
+    setSendingReplyId(complaint.id);
+    clearNotice();
+
+    try {
+      const res = await fetch(`${API}/manager/complaints/${complaint.id}/reply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ manager_reply: managerReply }),
+      });
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        setFailure(getFailureMessage(data, "Could not send the reply to the tenant."), "communication");
+        return;
+      }
+
+      setReplyMap((prev) => ({
+        ...prev,
+        [complaint.id]: data?.data?.manager_reply ?? managerReply,
+      }));
+      setSuccess(data?.message ?? "Reply sent to tenant successfully.", "communication");
+      await loadDashboard();
+    } catch {
+      setFailure("Network error while sending reply to the tenant.", "communication");
+    } finally {
+      setSendingReplyId(null);
+    }
+  }
+
+  async function copyReply(complaintId: number) {
+    const reply = replyMap[complaintId];
+    if (!reply) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(reply);
+      setSuccess("AI reply copied to clipboard.", "communication");
+    } catch {
+      setFailure("Could not copy the AI reply.", "communication");
     }
   }
 
@@ -1038,6 +1174,59 @@ export default function DashboardManager() {
                             <option value="resolved">Resolved</option>
                           </select>
                         </div>
+                      </div>
+
+                      <div
+                        style={{
+                          marginTop: "14px",
+                          padding: "14px",
+                          borderRadius: "14px",
+                          background: "rgba(29, 39, 72, 0.92)",
+                          border: "1px solid rgba(176, 193, 227, 0.14)",
+                        }}
+                      >
+                        <button
+                          type="button"
+                          className="action-btn"
+                          onClick={() => void generateReply(complaint)}
+                          disabled={generatingId === complaint.id}
+                          style={{ minWidth: "220px" }}
+                        >
+                          {generatingId === complaint.id ? "Generating reply..." : "Generate AI Reply"}
+                        </button>
+
+                        {replyMap[complaint.id] ? (
+                          <div style={{ marginTop: "12px" }}>
+                            <textarea
+                              className="manager-input manager-textarea"
+                              value={replyMap[complaint.id]}
+                              onChange={(e) =>
+                                setReplyMap((prev) => ({
+                                  ...prev,
+                                  [complaint.id]: e.target.value,
+                                }))
+                              }
+                              style={{ minHeight: "120px" }}
+                            />
+                            <button
+                              type="button"
+                              className="action-btn"
+                              onClick={() => void copyReply(complaint.id)}
+                              style={{ marginTop: "10px", minWidth: "160px" }}
+                            >
+                              Copy Reply
+                            </button>
+                            <button
+                              type="button"
+                              className="action-btn"
+                              onClick={() => void sendReplyToTenant(complaint)}
+                              disabled={sendingReplyId === complaint.id}
+                              style={{ marginTop: "10px", marginLeft: "10px", minWidth: "220px" }}
+                            >
+                              {sendingReplyId === complaint.id ? "Sending Reply..." : "Send Reply To Tenant"}
+                            </button>
+                          </div>
+                        ) : null}
                       </div>
                     </div>
                   ))}

@@ -76,5 +76,13 @@ class TasksAuthorizedCrudTest extends TestCase
         ])->assertOk()
             ->assertJsonPath('data.id', $complaintId)
             ->assertJsonPath('data.status', 'resolved');
+
+        $replyResponse = $this->apiJsonAs($manager, 'POST', "/api/manager/complaints/{$complaintId}/reply", [
+            'manager_reply' => 'We have scheduled the repair and will keep you updated. The Management Team',
+        ]);
+
+        $replyResponse->assertOk()
+            ->assertJsonPath('data.id', $complaintId)
+            ->assertJsonPath('data.manager_reply', 'We have scheduled the repair and will keep you updated. The Management Team');
     }
 }

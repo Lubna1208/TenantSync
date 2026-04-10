@@ -2,6 +2,20 @@ import { useEffect, useState, type CSSProperties, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 
 const API = "http://localhost:8000/api";
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+const GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"] as const;
+const CHAT_SYSTEM_PROMPT = `You are a helpful tenant support assistant for a property management platform called TenantSync.
+You only answer questions related to renting, property management, and tenant life.
+Keep answers concise, friendly, and professional.
+
+Common questions you handle:
+- Rent due dates: "Rent is typically due on the 1st of each month. Check your lease or contact your property manager for your specific due date."
+- How to report maintenance: "You can submit a maintenance complaint directly from your TenantSync dashboard using the 'Submit Complaint' button. Fill in the title, category, priority, and description."
+- Office hours: "Office hours vary by property. Contact your property manager through the dashboard announcements section or ask here and I'll do my best to help."
+- Lease questions, payment status, unit information: guide the tenant to check their dashboard or contact their manager.
+
+If asked about anything unrelated to property management or tenancy, politely decline and redirect.`;
+const CHAT_WELCOME_MESSAGE = "Hello! I'm your TenantSync support assistant. How can I help you today?";
 
 type User = {
   id: number;
@@ -19,6 +33,8 @@ type DashboardComplaint = {
   category?: string | null;
   priority?: string | null;
   status: "open" | "in_progress" | "resolved";
+  manager_reply?: string | null;
+  manager_reply_sent_at?: string | null;
   created_at: string;
 };
 
@@ -69,6 +85,46 @@ type DashboardResponse = {
   complaints: DashboardComplaint[];
   announcements: DashboardAnnouncement[];
 };
+
+type ChatMessage = {
+  role: "user" | "model";
+  text: string;
+};
+
+type GeminiContent = {
+  role: "user" | "model";
+  parts: Array<{ text: string }>;
+};
+
+async function generateGeminiText(contents: GeminiContent[]) {
+  let lastErrorMessage = "Gemini API request failed.";
+
+  for (const model of GEMINI_MODELS) {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents }),
+      }
+    );
+
+    const data = await res.json().catch(() => null);
+    const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+    if (res.ok && reply) {
+      return reply;
+    }
+
+    lastErrorMessage = data?.error?.message ?? lastErrorMessage;
+
+    if (res.status !== 503) {
+      break;
+    }
+  }
+
+  throw new Error(lastErrorMessage);
+}
 
 function safeParseUser(raw: string | null): User | null {
   if (!raw) return null;
@@ -123,6 +179,18 @@ function formatStatus(value: string) {
   return value.split("_").join(" ").replace(/\b\w/g, (letter: string) => letter.toUpperCase());
 }
 
+function complaintReplyLabel(status: DashboardComplaint["status"]) {
+  if (status === "resolved") {
+    return "Resolved Update";
+  }
+
+  if (status === "in_progress") {
+    return "Work In Progress";
+  }
+
+  return "Manager Reply";
+}
+
 export default function DashboardTenant() {
   const navigate = useNavigate();
   const [user, setUser] = useState<User | null>(() =>
@@ -148,6 +216,10 @@ export default function DashboardTenant() {
   const [isSubmittingComplaint, setIsSubmittingComplaint] = useState(false);
   const [isPayingRent, setIsPayingRent] = useState(false);
   const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
 
   useEffect(() => {
     if (!user) {
@@ -315,6 +387,61 @@ export default function DashboardTenant() {
       setError("Network error while updating password.");
     } finally {
       setIsUpdatingPassword(false);
+    }
+  }
+
+  function openChat() {
+    setChatOpen(true);
+    setChatMessages([{ role: "model", text: CHAT_WELCOME_MESSAGE }]);
+    setChatInput("");
+  }
+
+  function closeChat() {
+    setChatOpen(false);
+    setChatMessages([]);
+    setChatInput("");
+    setChatLoading(false);
+  }
+
+  async function sendChatMessage(e?: FormEvent) {
+    e?.preventDefault();
+
+    const trimmedInput = chatInput.trim();
+    if (!trimmedInput || chatLoading) {
+      return;
+    }
+
+    const nextUserMessage: ChatMessage = { role: "user", text: trimmedInput };
+    const nextMessages = [...chatMessages, nextUserMessage];
+
+    setChatMessages(nextMessages);
+    setChatInput("");
+    setChatLoading(true);
+
+    try {
+      if (!GEMINI_API_KEY) {
+        throw new Error("Gemini API key is missing.");
+      }
+
+      const contents: GeminiContent[] = [
+        { role: "user", parts: [{ text: CHAT_SYSTEM_PROMPT }] },
+        ...nextMessages.map((message) => ({
+          role: message.role,
+          parts: [{ text: message.text }],
+        })),
+      ];
+
+      const reply = await generateGeminiText(contents);
+      setChatMessages((current) => [...current, { role: "model", text: reply }]);
+    } catch (err) {
+      const fallback =
+        err instanceof Error && err.message === "Gemini API key is missing."
+          ? "Gemini support is not configured yet. Add VITE_GEMINI_API_KEY in client/.env."
+          : "Sorry, the AI assistant is unavailable right now. Please try again.";
+
+      setChatMessages((current) => [...current, { role: "model", text: fallback }]);
+    } finally {
+      setChatLoading(false);
     }
   }
 
@@ -641,6 +768,20 @@ export default function DashboardTenant() {
                           </span>
                           <span style={styles.inlineMeta}>{complaint.category || "General issue"}</span>
                         </div>
+
+                        {complaint.manager_reply ? (
+                          <div style={styles.replyCard}>
+                            <div style={styles.replyHeader}>
+                              <span style={styles.replyBadge}>{complaintReplyLabel(complaint.status)}</span>
+                              <span style={styles.replyMeta}>
+                                {complaint.manager_reply_sent_at
+                                  ? `Sent ${formatDate(complaint.manager_reply_sent_at)}`
+                                  : "Sent by management"}
+                              </span>
+                            </div>
+                            <p style={styles.replyBody}>{complaint.manager_reply}</p>
+                          </div>
+                        ) : null}
                       </article>
                     ))}
                   </div>
@@ -676,6 +817,65 @@ export default function DashboardTenant() {
           </>
         )}
       </div>
+
+      {chatOpen ? (
+        <div style={styles.chatPanel}>
+          <div style={styles.chatHeader}>
+            <div>
+              <div style={styles.chatTitle}>TenantSync AI Support</div>
+              <div style={styles.chatSubtitle}>Property help, maintenance, rent, and lease guidance</div>
+            </div>
+            <button type="button" style={styles.chatCloseButton} onClick={closeChat}>
+              x
+            </button>
+          </div>
+
+          <div style={styles.chatMessages}>
+            {chatMessages.map((message, index) => (
+              <div
+                key={`${message.role}-${index}`}
+                style={{
+                  ...styles.chatMessageRow,
+                  ...(message.role === "user" ? styles.chatMessageRowUser : styles.chatMessageRowModel),
+                }}
+              >
+                <div
+                  style={{
+                    ...styles.chatBubble,
+                    ...(message.role === "user" ? styles.chatBubbleUser : styles.chatBubbleModel),
+                  }}
+                >
+                  {message.text}
+                </div>
+              </div>
+            ))}
+
+            {chatLoading && (
+              <div style={styles.chatMessageRow}>
+                <div style={{ ...styles.chatBubble, ...styles.chatBubbleModel }}>
+                  Thinking...
+                </div>
+              </div>
+            )}
+          </div>
+
+          <form style={styles.chatComposer} onSubmit={sendChatMessage}>
+            <input
+              style={styles.chatInput}
+              placeholder="Ask about rent, complaints, or lease help"
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+            />
+            <button type="submit" style={styles.chatSendButton} disabled={chatLoading || !chatInput.trim()}>
+              Send
+            </button>
+          </form>
+        </div>
+      ) : null}
+
+      <button type="button" style={styles.chatLauncher} onClick={openChat}>
+        Chat
+      </button>
     </div>
   );
 }
@@ -1116,6 +1316,38 @@ const styles: Record<string, CSSProperties> = {
     color: "#9db8de",
     fontSize: "13px",
   },
+  replyCard: {
+    marginTop: "16px",
+    padding: "16px",
+    borderRadius: "18px",
+    background: "rgba(17, 25, 48, 0.9)",
+    border: "1px solid rgba(126, 215, 255, 0.14)",
+  },
+  replyHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: "12px",
+    marginBottom: "10px",
+  },
+  replyBadge: {
+    display: "inline-flex",
+    padding: "8px 12px",
+    borderRadius: "999px",
+    background: "rgba(31, 72, 128, 0.44)",
+    color: "#8fd8ff",
+    fontSize: "12px",
+    fontWeight: 700,
+  },
+  replyMeta: {
+    color: "#8eaed6",
+    fontSize: "12px",
+  },
+  replyBody: {
+    margin: 0,
+    color: "#e0ebfa",
+    lineHeight: 1.8,
+  },
   badge: {
     display: "inline-flex",
     alignItems: "center",
@@ -1147,6 +1379,130 @@ const styles: Record<string, CSSProperties> = {
     borderRadius: "16px",
     background: "rgba(131, 36, 61, 0.4)",
     color: "#ffd9e1",
+    padding: "12px 16px",
+    cursor: "pointer",
+    fontWeight: 700,
+    fontFamily: "inherit",
+  },
+  chatLauncher: {
+    position: "fixed",
+    right: "28px",
+    bottom: "28px",
+    width: "72px",
+    height: "72px",
+    borderRadius: "50%",
+    border: "1px solid rgba(176, 193, 227, 0.18)",
+    background: "linear-gradient(135deg, rgba(57, 125, 255, 0.96), rgba(31, 190, 234, 0.96))",
+    color: "#f4f7ff",
+    fontSize: "16px",
+    fontWeight: 700,
+    cursor: "pointer",
+    boxShadow: "0 18px 40px rgba(3, 9, 25, 0.34)",
+    zIndex: 20,
+    fontFamily: "inherit",
+  },
+  chatPanel: {
+    position: "fixed",
+    right: "28px",
+    bottom: "90px",
+    width: "360px",
+    maxHeight: "520px",
+    display: "flex",
+    flexDirection: "column",
+    background: "rgba(20, 29, 57, 0.97)",
+    color: "#f4f7ff",
+    borderRadius: "24px",
+    border: "1px solid rgba(176, 193, 227, 0.18)",
+    boxShadow: "0 24px 56px rgba(3, 9, 25, 0.34)",
+    overflow: "hidden",
+    zIndex: 20,
+  },
+  chatHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: "16px",
+    padding: "18px 18px 14px",
+    borderBottom: "1px solid rgba(176, 193, 227, 0.12)",
+  },
+  chatTitle: {
+    fontSize: "18px",
+    fontWeight: 700,
+    color: "#ffffff",
+  },
+  chatSubtitle: {
+    marginTop: "6px",
+    fontSize: "12px",
+    lineHeight: 1.5,
+    color: "#9db8de",
+  },
+  chatCloseButton: {
+    border: "none",
+    background: "transparent",
+    color: "#9db8de",
+    cursor: "pointer",
+    fontSize: "22px",
+    lineHeight: 1,
+    fontFamily: "inherit",
+  },
+  chatMessages: {
+    flex: 1,
+    overflowY: "auto",
+    padding: "16px",
+    display: "flex",
+    flexDirection: "column",
+    gap: "12px",
+  },
+  chatMessageRow: {
+    display: "flex",
+  },
+  chatMessageRowUser: {
+    justifyContent: "flex-end",
+  },
+  chatMessageRowModel: {
+    justifyContent: "flex-start",
+  },
+  chatBubble: {
+    maxWidth: "82%",
+    padding: "12px 14px",
+    borderRadius: "18px",
+    fontSize: "14px",
+    lineHeight: 1.6,
+    whiteSpace: "pre-wrap",
+  },
+  chatBubbleUser: {
+    background: "linear-gradient(135deg, rgba(57, 125, 255, 0.96), rgba(31, 190, 234, 0.96))",
+    color: "#f8fcff",
+    borderBottomRightRadius: "6px",
+  },
+  chatBubbleModel: {
+    background: "rgba(29, 39, 72, 0.92)",
+    color: "#e4eefc",
+    border: "1px solid rgba(176, 193, 227, 0.14)",
+    borderBottomLeftRadius: "6px",
+  },
+  chatComposer: {
+    display: "flex",
+    gap: "10px",
+    padding: "16px",
+    borderTop: "1px solid rgba(176, 193, 227, 0.12)",
+  },
+  chatInput: {
+    flex: 1,
+    borderRadius: "16px",
+    border: "1px solid rgba(86, 112, 159, 0.8)",
+    padding: "12px 14px",
+    background: "rgba(9, 17, 35, 0.74)",
+    color: "#f7fbff",
+    fontSize: "14px",
+    fontFamily: "inherit",
+    outline: "none",
+  },
+  chatSendButton: {
+    border: "none",
+    borderRadius: "16px",
+    background: "linear-gradient(135deg, #397dff, #1fbfea)",
+    color: "#f8fcff",
     padding: "12px 16px",
     cursor: "pointer",
     fontWeight: 700,
