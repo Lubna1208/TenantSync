@@ -133,8 +133,32 @@ abstract class TestCase extends BaseTestCase
                 $table->string('payment_month', 7);
                 $table->string('status')->default('pending');
                 $table->date('payment_date')->nullable();
+                $table->string('currency')->nullable();
+                $table->string('payment_method')->nullable();
+                $table->string('stripe_session_id')->nullable();
+                $table->string('stripe_payment_intent_id')->nullable();
+                $table->string('receipt_url')->nullable();
+                $table->timestamp('paid_at')->nullable();
+                $table->text('failure_reason')->nullable();
                 $table->timestamps();
                 $table->unique(['tenant_id', 'payment_month']);
+            });
+        }
+
+        if (! Schema::hasTable('tenant_invitations')) {
+            Schema::create('tenant_invitations', function (Blueprint $table) {
+                $table->id();
+                $table->foreignId('user_id')->constrained('users')->cascadeOnDelete();
+                $table->foreignId('tenant_id')->constrained('tenants')->cascadeOnDelete();
+                $table->foreignId('unit_id')->constrained('units')->cascadeOnDelete();
+                $table->foreignId('invited_by')->constrained('users')->cascadeOnDelete();
+                $table->string('email');
+                $table->string('token_hash')->unique();
+                $table->timestamp('expires_at');
+                $table->boolean('is_used')->default(false);
+                $table->timestamp('used_at')->nullable();
+                $table->timestamp('last_sent_at')->nullable();
+                $table->timestamps();
             });
         }
     }
@@ -147,6 +171,7 @@ abstract class TestCase extends BaseTestCase
             'rent_payments',
             'complaints',
             'announcements',
+            'tenant_invitations',
             'tenants',
             'units',
             'apartments',

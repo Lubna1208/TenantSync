@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
+use App\Models\TenantInvitation;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -74,8 +75,16 @@ class AuthController extends Controller
         if ($user->status !== 'active') {
             auth('api')->logout();
 
+            $hasPendingInvitation = TenantInvitation::query()
+                ->where('user_id', $user->id)
+                ->where('is_used', false)
+                ->where('expires_at', '>', now())
+                ->exists();
+
             return response()->json([
-                'message' => 'This account is inactive',
+                'message' => $hasPendingInvitation
+                    ? 'Your invitation is pending. Please open your invitation email and set your password first.'
+                    : 'This account is inactive',
             ], 403);
         }
 
