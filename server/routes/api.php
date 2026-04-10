@@ -10,15 +10,16 @@ use App\Http\Controllers\ComplaintController;
 use App\Http\Controllers\AnnouncementController;
 use App\Http\Controllers\OwnerController;
 use App\Http\Controllers\ManagerController;
+use App\Http\Controllers\StripePaymentController;
 
 Route::post('/auth/register', [AuthController::class, 'register']);
 Route::post('/auth/login', [AuthController::class, 'login']);
 Route::post('/auth/logout', [AuthController::class, 'logout'])->middleware(['jwt.cookie']);
+Route::post('/auth/refresh', [AuthController::class, 'refresh'])->middleware(['jwt.cookie']);
 
 
 Route::middleware(['jwt.cookie', 'auth.api.user'])->group(function () {
     Route::get('/auth/me', [AuthController::class, 'me']);
-    Route::post('/auth/refresh', [AuthController::class, 'refresh']);
     Route::post('/auth/change-password', [AuthController::class, 'changePassword']);
 
     Route::middleware('role:admin')->prefix('owner')->group(function () {
@@ -49,6 +50,8 @@ Route::middleware(['jwt.cookie', 'auth.api.user'])->group(function () {
     Route::middleware('role:tenant')->prefix('tenant')->group(function () {
         Route::get('/dashboard', [TenantController::class, 'dashboard']);
         Route::post('/complaints', [TenantController::class, 'storeComplaint']);
+        Route::post('/payments/checkout-session', [StripePaymentController::class, 'createCheckoutSession']);
+        Route::get('/payments/verify', [StripePaymentController::class, 'verifySession']);
         Route::post('/rent-payments', [TenantController::class, 'storeRentPayment']);
     });
 
@@ -82,6 +85,8 @@ Route::middleware(['jwt.cookie'])->get('/debug-auth', function () {
         ], 500);
     }
 });
+
+Route::post('/stripe/webhook', [StripePaymentController::class, 'handleWebhook']);
 
 Route::get('/ping', function () {
     return response()->json(['ok' => true]);

@@ -13,7 +13,7 @@ class AuthController extends Controller
     public function __construct()
     {
         $this->middleware('jwt.cookie', ['except' => ['register', 'login', 'logout']]);
-        $this->middleware('auth:api', ['except' => ['register', 'login', 'logout']]);
+        $this->middleware('auth:api', ['except' => ['register', 'login', 'logout', 'refresh']]);
     }
 
     public function register(Request $request)
