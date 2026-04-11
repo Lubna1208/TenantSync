@@ -306,6 +306,20 @@
   align-items: stretch;
 }
 
+.manager-actions-grid.manager-actions-grid-single {
+  grid-template-columns: minmax(0, 560px);
+  justify-content: flex-start;
+}
+
+.manager-actions-shortcuts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+  max-width: 560px;
+  margin-top: 18px;
+}
+
 .manager-actions-side {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;

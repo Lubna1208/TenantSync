@@ -36,6 +36,9 @@ Route::middleware(['jwt.cookie', 'auth.api.user'])->group(function () {
         Route::post('/properties', [OwnerController::class, 'storeProperty']);
         Route::delete('/properties/{id}', [OwnerController::class, 'destroyProperty']);
         Route::patch('/properties/{id}/manager', [OwnerController::class, 'assignManager']);
+
+        Route::post('/properties/{id}/units', [OwnerController::class, 'storeUnit']);
+        Route::post('/units/{id}/assign-tenant', [OwnerController::class, 'assignTenant']);
     });
 
     Route::middleware('role:manager')->prefix('manager')->group(function () {
