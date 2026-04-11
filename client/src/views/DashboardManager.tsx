@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import ManagerHeaderPolished from "../components/manager/ManagerHeaderPolished";
@@ -301,6 +301,57 @@ export default function DashboardManager() {
   const [generatingId, setGeneratingId] = useState<number | null>(null);
   const [sendingReplyId, setSendingReplyId] = useState<number | null>(null);
 
+  const loadDashboard = useCallback(async () => {
+    setLoading(true);
+
+    try {
+      const [dashboardRes, complaintsRes, announcementsRes] = await Promise.all([
+        api.manager.dashboard(),
+        api.manager.complaints(),
+        api.manager.announcements(),
+      ]);
+
+      const dashboardData = await dashboardRes.json().catch(() => null);
+      const complaintsData = await complaintsRes.json().catch(() => null);
+      const announcementsData = await announcementsRes.json().catch(() => null);
+
+      if (dashboardRes.status === 401 || complaintsRes.status === 401 || announcementsRes.status === 401) {
+        clearStoredAuth();
+        setUser(null);
+        navigate("/login");
+        return;
+      }
+
+      if (!dashboardRes.ok || !dashboardData) {
+        setFailure(getApiMessage(dashboardData, "Manager dashboard could not be loaded."), "general");
+        setDashboard(null);
+        setComplaints([]);
+        setAnnouncements([]);
+        setAnnouncementsCount(0);
+        return;
+      }
+
+      const announcementList = (announcementsData?.data as AnnouncementItem[] | undefined) ?? [];
+
+      setDashboard(dashboardData.data ?? null);
+      setComplaints(complaintsData?.data ?? []);
+      setAnnouncements(announcementList);
+      setAnnouncementsCount(
+        announcementList.filter(
+          (item) => item.created_by === user?.id
+        ).length
+      );
+
+      if (dashboardData.data === null) {
+        setSuccess(dashboardData.message ?? "No property is assigned to this manager yet.", "general");
+      }
+    } catch {
+      setFailure("Network error while loading manager dashboard.", "general");
+    } finally {
+      setLoading(false);
+    }
+  }, [navigate, user?.id]);
+
   useEffect(() => {
     if (!user) {
       navigate("/login");
@@ -308,7 +359,7 @@ export default function DashboardManager() {
     }
 
     void loadDashboard();
-  }, [user, navigate]);
+  }, [loadDashboard, navigate, user]);
 
   useEffect(() => {
     if (!message && !error) {
@@ -419,57 +470,6 @@ export default function DashboardManager() {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [activeManagerPanel, navigate]);
-
-  async function loadDashboard() {
-    setLoading(true);
-
-    try {
-      const [dashboardRes, complaintsRes, announcementsRes] = await Promise.all([
-        api.manager.dashboard(),
-        api.manager.complaints(),
-        api.manager.announcements(),
-      ]);
-
-      const dashboardData = await dashboardRes.json().catch(() => null);
-      const complaintsData = await complaintsRes.json().catch(() => null);
-      const announcementsData = await announcementsRes.json().catch(() => null);
-
-      if (dashboardRes.status === 401 || complaintsRes.status === 401 || announcementsRes.status === 401) {
-        clearStoredAuth();
-        setUser(null);
-        navigate("/login");
-        return;
-      }
-
-      if (!dashboardRes.ok || !dashboardData) {
-        setFailure(getApiMessage(dashboardData, "Manager dashboard could not be loaded."), "general");
-        setDashboard(null);
-        setComplaints([]);
-        setAnnouncements([]);
-        setAnnouncementsCount(0);
-        return;
-      }
-
-      const announcementList = (announcementsData?.data as AnnouncementItem[] | undefined) ?? [];
-
-      setDashboard(dashboardData.data ?? null);
-      setComplaints(complaintsData?.data ?? []);
-      setAnnouncements(announcementList);
-      setAnnouncementsCount(
-        announcementList.filter(
-          (item) => item.created_by === user?.id
-        ).length
-      );
-
-      if (dashboardData.data === null) {
-        setSuccess(dashboardData.message ?? "No property is assigned to this manager yet.", "general");
-      }
-    } catch {
-      setFailure("Network error while loading manager dashboard.", "general");
-    } finally {
-      setLoading(false);
-    }
-  }
 
   async function logout() {
     try {

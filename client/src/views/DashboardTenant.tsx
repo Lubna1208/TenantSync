@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { getApiMessage } from "../helpers/apiMessages";
 import { api, clearStoredAuth } from "../api";
@@ -258,93 +258,6 @@ export default function DashboardTenant() {
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
 
-  useEffect(() => {
-    if (!user) {
-      navigate("/login", { replace: true });
-      return;
-    }
-
-    void loadDashboard();
-  }, [user, navigate]);
-
-  useEffect(() => {
-    if (!user) {
-      return;
-    }
-
-    const params = new URLSearchParams(window.location.search);
-    const checkoutStatus = params.get("payment") ?? params.get("checkout");
-    const sessionId = params.get("session_id");
-
-    if (checkoutStatus === "cancelled") {
-      clearCheckoutParams();
-      showInlineNotice("pay-rent", "Payment was cancelled.", "error");
-      void loadDashboard();
-      return;
-    }
-
-    if (checkoutStatus !== "success" || !sessionId) {
-      return;
-    }
-
-    if (processedCheckoutSessionRef.current === sessionId) {
-      return;
-    }
-
-    processedCheckoutSessionRef.current = sessionId;
-    void verifyPayment(sessionId);
-  }, [user]);
-
-  useEffect(() => {
-    if (!inlineNotice) {
-      return;
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      setInlineNotice((current) =>
-        current?.key === inlineNotice.key ? null : current
-      );
-    }, 5000);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [inlineNotice]);
-
-  useEffect(() => {
-    if (!showComplaintForm) {
-      return;
-    }
-
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setShowComplaintForm(false);
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [showComplaintForm]);
-
-  useEffect(() => {
-    if (!activeTenantPanel) {
-      return;
-    }
-
-    const panelRef =
-      activeTenantPanel === "complaints" ? complaintHistoryRef : announcementsRef;
-
-    panelRef.current?.scrollIntoView({
-      behavior: "smooth",
-      block: "start",
-    });
-  }, [activeTenantPanel]);
-
   function clearCheckoutParams() {
     const url = new URL(window.location.href);
     url.searchParams.delete("payment");
@@ -353,7 +266,7 @@ export default function DashboardTenant() {
     window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
   }
 
-  async function loadDashboard() {
+  const loadDashboard = useCallback(async () => {
     setLoading(true);
     setError("");
 
@@ -386,7 +299,7 @@ export default function DashboardTenant() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [navigate]);
 
   async function logout() {
     try {
@@ -463,7 +376,7 @@ export default function DashboardTenant() {
     }
   }
 
-  async function verifyPayment(sessionId: string) {
+  const verifyPayment = useCallback(async (sessionId: string) => {
     setIsPayingRent(true);
 
     try {
@@ -491,7 +404,94 @@ export default function DashboardTenant() {
     } finally {
       setIsPayingRent(false);
     }
-  }
+  }, [loadDashboard, navigate]);
+
+  useEffect(() => {
+    if (!user) {
+      navigate("/login", { replace: true });
+      return;
+    }
+
+    void loadDashboard();
+  }, [loadDashboard, navigate, user]);
+
+  useEffect(() => {
+    if (!user) {
+      return;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const checkoutStatus = params.get("payment") ?? params.get("checkout");
+    const sessionId = params.get("session_id");
+
+    if (checkoutStatus === "cancelled") {
+      clearCheckoutParams();
+      showInlineNotice("pay-rent", "Payment was cancelled.", "error");
+      void loadDashboard();
+      return;
+    }
+
+    if (checkoutStatus !== "success" || !sessionId) {
+      return;
+    }
+
+    if (processedCheckoutSessionRef.current === sessionId) {
+      return;
+    }
+
+    processedCheckoutSessionRef.current = sessionId;
+    void verifyPayment(sessionId);
+  }, [loadDashboard, user, verifyPayment]);
+
+  useEffect(() => {
+    if (!inlineNotice) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setInlineNotice((current) =>
+        current?.key === inlineNotice.key ? null : current
+      );
+    }, 5000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [inlineNotice]);
+
+  useEffect(() => {
+    if (!showComplaintForm) {
+      return;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setShowComplaintForm(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [showComplaintForm]);
+
+  useEffect(() => {
+    if (!activeTenantPanel) {
+      return;
+    }
+
+    const panelRef =
+      activeTenantPanel === "complaints" ? complaintHistoryRef : announcementsRef;
+
+    panelRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  }, [activeTenantPanel]);
 
   async function submitComplaint(e: FormEvent) {
     e.preventDefault();

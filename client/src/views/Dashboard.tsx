@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, clearStoredAuth } from "../api";
 import { getApiMessage } from "../helpers/apiMessages";
@@ -164,6 +164,37 @@ export default function Dashboard() {
   });
   const visibleNotice = error || message;
 
+  const loadOwnerData = useCallback(async () => {
+    setLoading(true);
+    setError("");
+
+    try {
+      const [propertiesRes, managersRes] = await Promise.all([
+        api.owner.properties(),
+        api.owner.managers(),
+      ]);
+
+      if (!propertiesRes.ok || !managersRes.ok) {
+        clearStoredAuth();
+        setUser(null);
+        navigate("/login", { replace: true });
+        return;
+      }
+
+      const propertiesData = await parseResponse<{ data?: Property[] }>(
+        propertiesRes
+      );
+      const managersData = await parseResponse<{ data?: Manager[] }>(managersRes);
+
+      setProperties(propertiesData?.data ?? []);
+      setManagers(managersData?.data ?? []);
+    } catch {
+      setFailure("Owner data could not be loaded.");
+    } finally {
+      setLoading(false);
+    }
+  }, [navigate]);
+
   useEffect(() => {
     if (!user) {
       navigate("/login", { replace: true });
@@ -176,7 +207,7 @@ export default function Dashboard() {
     }
 
     void loadOwnerData();
-  }, [navigate, user]);
+  }, [loadOwnerData, navigate, user]);
 
   useEffect(() => {
     if (!visibleNotice) {
@@ -206,37 +237,6 @@ export default function Dashboard() {
 
     return () => window.clearTimeout(timeoutId);
   }, [inlineNotice]);
-
-  async function loadOwnerData() {
-    setLoading(true);
-    setError("");
-
-    try {
-      const [propertiesRes, managersRes] = await Promise.all([
-        api.owner.properties(),
-        api.owner.managers(),
-      ]);
-
-      if (!propertiesRes.ok || !managersRes.ok) {
-        clearStoredAuth();
-        setUser(null);
-        navigate("/login", { replace: true });
-        return;
-      }
-
-      const propertiesData = await parseResponse<{ data?: Property[] }>(
-        propertiesRes
-      );
-      const managersData = await parseResponse<{ data?: Manager[] }>(managersRes);
-
-      setProperties(propertiesData?.data ?? []);
-      setManagers(managersData?.data ?? []);
-    } catch {
-      setFailure("Owner data could not be loaded.");
-    } finally {
-      setLoading(false);
-    }
-  }
 
   async function logout() {
     try {
@@ -281,12 +281,6 @@ export default function Dashboard() {
         {inlineNotice.text}
       </div>
     );
-  }
-
-  function setSuccess(text: string, context: NoticeContext = "general") {
-    setMessage(text);
-    setError("");
-    setNoticeContext(context);
   }
 
   function setFailure(text: string, context: NoticeContext = "general") {
