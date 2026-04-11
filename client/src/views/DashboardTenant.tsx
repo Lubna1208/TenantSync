@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { authFetch, clearStoredAuth, getStoredToken } from "../helpers/authApi";
+import { getApiMessage } from "../helpers/apiMessages";
+import { api, clearStoredAuth } from "../api";
 
 const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 const GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"] as const;
@@ -98,9 +99,17 @@ type ChatMessage = {
   text: string;
 };
 
+type TenantActionPanel = "complaints" | "announcements";
+
 type GeminiContent = {
   role: "user" | "model";
   parts: Array<{ text: string }>;
+};
+
+type InlineNotice = {
+  key: string;
+  text: string;
+  tone: "success" | "error";
 };
 
 async function generateGeminiText(contents: GeminiContent[]) {
@@ -216,6 +225,9 @@ function complaintReplyLabel(status: DashboardComplaint["status"]) {
 export default function DashboardTenant() {
   const navigate = useNavigate();
   const processedCheckoutSessionRef = useRef<string | null>(null);
+  const paymentSectionRef = useRef<HTMLElement | null>(null);
+  const complaintHistoryRef = useRef<HTMLDivElement | null>(null);
+  const announcementsRef = useRef<HTMLDivElement | null>(null);
   const [user, setUser] = useState<User | null>(() =>
     safeParseUser(localStorage.getItem("ts_user"))
   );
@@ -223,8 +235,10 @@ export default function DashboardTenant() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [inlineNotice, setInlineNotice] = useState<InlineNotice | null>(null);
   const [showComplaintForm, setShowComplaintForm] = useState(false);
   const [showPasswordForm, setShowPasswordForm] = useState(false);
+  const [activeTenantPanel, setActiveTenantPanel] = useState<TenantActionPanel | null>(null);
   const [complaintForm, setComplaintForm] = useState({
     title: "",
     category: "",
@@ -264,8 +278,7 @@ export default function DashboardTenant() {
 
     if (checkoutStatus === "cancelled") {
       clearCheckoutParams();
-      setMessage("Payment was cancelled.");
-      setError("");
+      showInlineNotice("pay-rent", "Payment was cancelled.", "error");
       void loadDashboard();
       return;
     }
@@ -282,6 +295,56 @@ export default function DashboardTenant() {
     void verifyPayment(sessionId);
   }, [user]);
 
+  useEffect(() => {
+    if (!inlineNotice) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setInlineNotice((current) =>
+        current?.key === inlineNotice.key ? null : current
+      );
+    }, 5000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [inlineNotice]);
+
+  useEffect(() => {
+    if (!showComplaintForm) {
+      return;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setShowComplaintForm(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [showComplaintForm]);
+
+  useEffect(() => {
+    if (!activeTenantPanel) {
+      return;
+    }
+
+    const panelRef =
+      activeTenantPanel === "complaints" ? complaintHistoryRef : announcementsRef;
+
+    panelRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  }, [activeTenantPanel]);
+
   function clearCheckoutParams() {
     const url = new URL(window.location.href);
     url.searchParams.delete("payment");
@@ -295,9 +358,7 @@ export default function DashboardTenant() {
     setError("");
 
     try {
-      const res = await authFetch("/tenant/dashboard", {
-        cache: "no-store",
-      });
+      const res = await api.tenant.dashboard();
 
       const data = await res.json().catch(() => null);
 
@@ -311,7 +372,7 @@ export default function DashboardTenant() {
       }
 
       if (!res.ok || !data) {
-        setError(data?.message ?? "Tenant dashboard could not be loaded.");
+        setError(getApiMessage(data, "Tenant dashboard could not be loaded."));
         setDashboard(null);
         return;
       }
@@ -329,9 +390,7 @@ export default function DashboardTenant() {
 
   async function logout() {
     try {
-      await authFetch("/auth/logout", {
-        method: "POST",
-      });
+      await api.auth.logout();
     } catch {
       // ignore logout failure
     }
@@ -341,16 +400,45 @@ export default function DashboardTenant() {
     navigate("/login", { replace: true });
   }
 
+  function showInlineNotice(
+    key: string,
+    text: string,
+    tone: InlineNotice["tone"]
+  ) {
+    setInlineNotice({ key, text, tone });
+  }
+
+  function renderInlineNotice(key: string) {
+    if (inlineNotice?.key !== key) {
+      return null;
+    }
+
+    return (
+      <div
+        style={{
+          ...styles.inlineActionNotice,
+          ...(inlineNotice.tone === "error"
+            ? styles.inlineActionNoticeError
+            : styles.inlineActionNoticeSuccess),
+        }}
+      >
+        {inlineNotice.text}
+      </div>
+    );
+  }
+
+  function scrollToPaymentSection() {
+    paymentSectionRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  }
+
   async function payRent() {
     setIsPayingRent(true);
-    setMessage("");
-    setError("");
 
     try {
-      const res = await authFetch("/tenant/payments/checkout-session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      });
+      const res = await api.tenant.createCheckoutSession();
 
       const data = await res.json().catch(() => null);
       const checkoutUrl = data?.url;
@@ -363,13 +451,13 @@ export default function DashboardTenant() {
       }
 
       if (!res.ok || typeof checkoutUrl !== "string" || !checkoutUrl) {
-        setError(data?.error ?? data?.message ?? "Checkout session could not be created.");
+        showInlineNotice("pay-rent", getApiMessage(data, "Checkout session could not be created."), "error");
         return;
       }
 
       window.location.assign(checkoutUrl);
     } catch {
-      setError("Network error while starting payment.");
+      showInlineNotice("pay-rent", "Network error while starting payment.", "error");
     } finally {
       setIsPayingRent(false);
     }
@@ -377,11 +465,9 @@ export default function DashboardTenant() {
 
   async function verifyPayment(sessionId: string) {
     setIsPayingRent(true);
-    setMessage("");
-    setError("");
 
     try {
-      const res = await authFetch(`/tenant/payments/verify?session_id=${encodeURIComponent(sessionId)}`);
+      const res = await api.tenant.verifyPayment(sessionId);
 
       const data = await res.json().catch(() => null);
 
@@ -393,15 +479,15 @@ export default function DashboardTenant() {
       }
 
       if (!res.ok) {
-        setError(data?.error ?? data?.message ?? "Could not verify payment status.");
+        showInlineNotice("pay-rent", getApiMessage(data, "Could not verify payment status."), "error");
         return;
       }
 
       clearCheckoutParams();
       await loadDashboard();
-      setMessage(data?.message ?? "Payment verification complete.");
+      showInlineNotice("pay-rent", data?.message ?? "Payment verification complete.", "success");
     } catch {
-      setError("Could not verify payment status.");
+      showInlineNotice("pay-rent", "Could not verify payment status.", "error");
     } finally {
       setIsPayingRent(false);
     }
@@ -410,20 +496,14 @@ export default function DashboardTenant() {
   async function submitComplaint(e: FormEvent) {
     e.preventDefault();
     setIsSubmittingComplaint(true);
-    setMessage("");
-    setError("");
 
     try {
-      const res = await authFetch("/tenant/complaints", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(complaintForm),
-      });
+      const res = await api.tenant.submitComplaint(complaintForm);
 
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
-        setError(data?.message ?? "Complaint could not be submitted.");
+        showInlineNotice("submit-complaint", getApiMessage(data, "Complaint could not be submitted."), "error");
         return;
       }
 
@@ -433,11 +513,12 @@ export default function DashboardTenant() {
         priority: "medium",
         description: "",
       });
+      setActiveTenantPanel("complaints");
       setShowComplaintForm(false);
-      setMessage(data?.message ?? "Complaint submitted successfully.");
+      showInlineNotice("submit-complaint", data?.message ?? "Complaint submitted successfully.", "success");
       await loadDashboard();
     } catch {
-      setError("Network error while submitting complaint.");
+      showInlineNotice("submit-complaint", "Network error while submitting complaint.", "error");
     } finally {
       setIsSubmittingComplaint(false);
     }
@@ -446,24 +527,14 @@ export default function DashboardTenant() {
   async function submitPasswordChange(e: FormEvent) {
     e.preventDefault();
     setIsUpdatingPassword(true);
-    setMessage("");
-    setError("");
 
     try {
-      const token = getStoredToken();
-      const res = await authFetch("/auth/change-password", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify(passwordForm),
-      });
+      const res = await api.auth.changePassword(passwordForm);
 
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
-        setError(data?.message ?? "Password could not be updated.");
+        showInlineNotice("change-password", getApiMessage(data, "Password could not be updated."), "error");
         return;
       }
 
@@ -472,10 +543,9 @@ export default function DashboardTenant() {
         password: "",
         password_confirmation: "",
       });
-      setShowPasswordForm(false);
-      setMessage(data?.message ?? "Password updated successfully.");
+      showInlineNotice("change-password", data?.message ?? "Password updated successfully.", "success");
     } catch {
-      setError("Network error while updating password.");
+      showInlineNotice("change-password", "Network error while updating password.", "error");
     } finally {
       setIsUpdatingPassword(false);
     }
@@ -731,8 +801,94 @@ export default function DashboardTenant() {
                 <button style={styles.submitBtn} type="submit" disabled={isUpdatingPassword}>
                   {isUpdatingPassword ? "Updating..." : "Save New Password"}
                 </button>
+                {renderInlineNotice("change-password")}
               </form>
             )}
+
+            <section style={styles.actionPanel}>
+              <div style={styles.sectionBadge}>Tenant Actions</div>
+              <div style={styles.actionPanelGrid}>
+                <div style={styles.actionCardWrap}>
+                  <button
+                    style={{ ...styles.actionBtn, ...styles.primaryAction }}
+                    onClick={() => void payRent()}
+                    disabled={isPayingRent || !unit}
+                  >
+                    <span style={styles.actionTitle}>
+                      {isPayingRent ? "Processing..." : "Pay with Stripe"}
+                    </span>
+                    <span style={styles.actionText}>
+                      Open Stripe Checkout and pay your current rent from Stripe's secure hosted page.
+                    </span>
+                  </button>
+                  {renderInlineNotice("pay-rent")}
+                </div>
+
+                <div style={styles.actionCardWrap}>
+                  <button
+                    style={{ ...styles.actionBtn, ...styles.secondaryAction }}
+                    onClick={() => setShowComplaintForm(true)}
+                    disabled={!unit}
+                  >
+                    <span style={styles.actionTitle}>Submit Complaint</span>
+                    <span style={styles.actionText}>Send a maintenance or support request instantly.</span>
+                  </button>
+                  {!showComplaintForm ? renderInlineNotice("submit-complaint") : null}
+                </div>
+
+                <div style={styles.actionCardWrap}>
+                  <button
+                    type="button"
+                    style={{
+                      ...styles.actionBtn,
+                      ...styles.secondaryAction,
+                      ...(activeTenantPanel === "complaints" ? styles.activeAction : {}),
+                    }}
+                    onClick={() =>
+                      setActiveTenantPanel((current) =>
+                        current === "complaints" ? null : "complaints"
+                      )
+                    }
+                  >
+                    <span style={styles.actionTitle}>Complaint History</span>
+                    <span style={styles.actionText}>
+                      Show your previous complaints and manager replies only when needed.
+                    </span>
+                  </button>
+                </div>
+
+                <div style={styles.actionCardWrap}>
+                  <button
+                    type="button"
+                    style={{
+                      ...styles.actionBtn,
+                      ...styles.secondaryAction,
+                      ...(activeTenantPanel === "announcements" ? styles.activeAction : {}),
+                    }}
+                    onClick={() =>
+                      setActiveTenantPanel((current) =>
+                        current === "announcements" ? null : "announcements"
+                      )
+                    }
+                  >
+                    <span style={styles.actionTitle}>Announcements</span>
+                    <span style={styles.actionText}>
+                      Open the latest building updates only when you click this button.
+                    </span>
+                  </button>
+                </div>
+
+                <div style={styles.actionCardWrap}>
+                  <button
+                    style={{ ...styles.actionBtn, ...styles.secondaryAction }}
+                    onClick={scrollToPaymentSection}
+                  >
+                    <span style={styles.actionTitle}>Rent Payment</span>
+                    <span style={styles.actionText}>Open the payment detail section and review your latest rent status.</span>
+                  </button>
+                </div>
+              </div>
+            </section>
 
             <section style={styles.summaryGrid}>
               {statCards.map((item) => (
@@ -747,35 +903,7 @@ export default function DashboardTenant() {
               ))}
             </section>
 
-            <section style={styles.actionPanel}>
-              <div style={styles.sectionBadge}>Tenant Actions</div>
-              <div style={styles.actionPanelGrid}>
-                <button
-                  style={{ ...styles.actionBtn, ...styles.primaryAction }}
-                  onClick={() => void payRent()}
-                  disabled={isPayingRent || !unit}
-                >
-                  <span style={styles.actionTitle}>
-                    {isPayingRent ? "Processing..." : "Pay with Stripe"}
-                  </span>
-                  <span style={styles.actionText}>
-                    Open Stripe Checkout and pay your current rent from Stripe's secure hosted page.
-                  </span>
-                </button>
-                <button
-                  style={{ ...styles.actionBtn, ...styles.secondaryAction }}
-                  onClick={() => setShowComplaintForm((current) => !current)}
-                  disabled={!unit}
-                >
-                  <span style={styles.actionTitle}>
-                    {showComplaintForm ? "Hide Complaint Form" : "Submit Complaint"}
-                  </span>
-                  <span style={styles.actionText}>Send a maintenance or support request instantly.</span>
-                </button>
-              </div>
-            </section>
-
-            <section style={styles.panel}>
+            <section style={styles.panel} ref={paymentSectionRef}>
               <div style={styles.sectionHeadRow}>
                 <div>
                   <div style={styles.sectionBadge}>Payment Details</div>
@@ -819,155 +947,99 @@ export default function DashboardTenant() {
               {paymentFailure ? <p style={styles.paymentFailureText}>{paymentFailure}</p> : null}
             </section>
 
-            {showComplaintForm && (
-              <form style={styles.panel} onSubmit={submitComplaint}>
-                <div style={styles.sectionBadge}>Support Request</div>
-                <h2 style={styles.sectionTitle}>Submit a Complaint</h2>
-                <p style={styles.sectionLead}>
-                  Share the issue clearly so your manager can respond faster.
-                </p>
-                <div style={styles.formGrid}>
-                  <input
-                    style={styles.input}
-                    placeholder="Complaint title"
-                    value={complaintForm.title}
-                    onChange={(e) =>
-                      setComplaintForm((current) => ({
-                        ...current,
-                        title: e.target.value,
-                      }))
-                    }
-                  />
-                  <input
-                    style={styles.input}
-                    placeholder="Category"
-                    value={complaintForm.category}
-                    onChange={(e) =>
-                      setComplaintForm((current) => ({
-                        ...current,
-                        category: e.target.value,
-                      }))
-                    }
-                  />
-                  <select
-                    style={styles.input}
-                    value={complaintForm.priority}
-                    onChange={(e) =>
-                      setComplaintForm((current) => ({
-                        ...current,
-                        priority: e.target.value,
-                      }))
-                    }
-                  >
-                    <option value="low">Low priority</option>
-                    <option value="medium">Medium priority</option>
-                    <option value="high">High priority</option>
-                  </select>
-                </div>
-                <textarea
-                  style={{ ...styles.input, minHeight: "120px", resize: "vertical" }}
-                  placeholder="Describe the issue"
-                  value={complaintForm.description}
-                  onChange={(e) =>
-                    setComplaintForm((current) => ({
-                      ...current,
-                      description: e.target.value,
-                    }))
-                  }
-                />
-                <button style={styles.submitBtn} type="submit" disabled={isSubmittingComplaint}>
-                  {isSubmittingComplaint ? "Submitting..." : "Send Complaint"}
-                </button>
-              </form>
-            )}
-
-            <section style={styles.contentGrid}>
-              <div style={styles.panel}>
-                <div style={styles.sectionHeadRow}>
-                  <div>
-                    <div style={styles.sectionBadge}>Support History</div>
-                    <h2 style={styles.sectionTitle}>Complaint History</h2>
+            {activeTenantPanel === "complaints" ? (
+              <section style={styles.contentReveal}>
+                <div style={styles.panel} ref={complaintHistoryRef}>
+                  <div style={styles.sectionHeadRow}>
+                    <div>
+                      <div style={styles.sectionBadge}>Support History</div>
+                      <h2 style={styles.sectionTitle}>Complaint History</h2>
+                    </div>
+                    <span style={styles.sectionChip}>{dashboard.complaints.length} total</span>
                   </div>
-                  <span style={styles.sectionChip}>{dashboard.complaints.length} total</span>
-                </div>
 
-                {dashboard.complaints.length === 0 ? (
-                  <p style={styles.emptyText}>No complaints submitted yet.</p>
-                ) : (
-                  <div style={styles.stack}>
-                    {dashboard.complaints.map((complaint) => (
-                      <article key={complaint.id} style={styles.listCard}>
-                        <div style={styles.sectionHeadRow}>
-                          <div>
-                            <h3 style={styles.itemTitle}>{complaint.title}</h3>
-                            <p style={styles.itemMeta}>{formatRelative(complaint.created_at)}</p>
-                          </div>
-                          <span
-                            style={{
-                              ...styles.badge,
-                              ...(complaint.status === "resolved"
-                                ? styles.badgePaid
-                                : complaint.status === "in_progress"
-                                  ? styles.badgeWarning
-                                  : styles.badgePending),
-                            }}
-                          >
-                            {formatStatus(complaint.status)}
-                          </span>
-                        </div>
-                        <p style={styles.bodyText}>{complaint.description}</p>
-                        <div style={styles.itemFooter}>
-                          <span style={styles.inlineTag}>
-                            {complaint.priority ? formatStatus(complaint.priority) : "Normal Priority"}
-                          </span>
-                          <span style={styles.inlineMeta}>{complaint.category || "General issue"}</span>
-                        </div>
-
-                        {complaint.manager_reply ? (
-                          <div style={styles.replyCard}>
-                            <div style={styles.replyHeader}>
-                              <span style={styles.replyBadge}>{complaintReplyLabel(complaint.status)}</span>
-                              <span style={styles.replyMeta}>
-                                {complaint.manager_reply_sent_at
-                                  ? `Sent ${formatDate(complaint.manager_reply_sent_at)}`
-                                  : "Sent by management"}
-                              </span>
+                  {dashboard.complaints.length === 0 ? (
+                    <p style={styles.emptyText}>No complaints submitted yet.</p>
+                  ) : (
+                    <div style={styles.stack}>
+                      {dashboard.complaints.map((complaint) => (
+                        <article key={complaint.id} style={styles.listCard}>
+                          <div style={styles.sectionHeadRow}>
+                            <div>
+                              <h3 style={styles.itemTitle}>{complaint.title}</h3>
+                              <p style={styles.itemMeta}>{formatRelative(complaint.created_at)}</p>
                             </div>
-                            <p style={styles.replyBody}>{complaint.manager_reply}</p>
+                            <span
+                              style={{
+                                ...styles.badge,
+                                ...(complaint.status === "resolved"
+                                  ? styles.badgePaid
+                                  : complaint.status === "in_progress"
+                                    ? styles.badgeWarning
+                                    : styles.badgePending),
+                              }}
+                            >
+                              {formatStatus(complaint.status)}
+                            </span>
                           </div>
-                        ) : null}
-                      </article>
-                    ))}
-                  </div>
-                )}
-              </div>
+                          <p style={styles.bodyText}>{complaint.description}</p>
+                          <div style={styles.itemFooter}>
+                            <span style={styles.inlineTag}>
+                              {complaint.priority ? formatStatus(complaint.priority) : "Normal Priority"}
+                            </span>
+                            <span style={styles.inlineMeta}>{complaint.category || "General issue"}</span>
+                          </div>
 
-              <div style={styles.panel}>
-                <div style={styles.sectionHeadRow}>
-                  <div>
-                    <div style={styles.sectionBadge}>Building Updates</div>
-                    <h2 style={styles.sectionTitle}>Announcements</h2>
-                  </div>
-                  <span style={styles.sectionChip}>{dashboard.announcements.length} updates</span>
+                          {complaint.manager_reply ? (
+                            <div style={styles.replyCard}>
+                              <div style={styles.replyHeader}>
+                                <span style={styles.replyBadge}>{complaintReplyLabel(complaint.status)}</span>
+                                <span style={styles.replyMeta}>
+                                  {complaint.manager_reply_sent_at
+                                    ? `Sent ${formatDate(complaint.manager_reply_sent_at)}`
+                                    : "Sent by management"}
+                                </span>
+                              </div>
+                              <p style={styles.replyBody}>{complaint.manager_reply}</p>
+                            </div>
+                          ) : null}
+                        </article>
+                      ))}
+                    </div>
+                  )}
                 </div>
+              </section>
+            ) : null}
 
-                {dashboard.announcements.length === 0 ? (
-                  <p style={styles.emptyText}>No announcements available yet.</p>
-                ) : (
-                  <div style={styles.stack}>
-                    {dashboard.announcements.map((item) => (
-                      <article key={item.id} style={styles.listCard}>
-                        <h3 style={styles.itemTitle}>{item.title}</h3>
-                        <p style={styles.bodyText}>{item.message}</p>
-                        <p style={styles.itemMeta}>
-                          {item.creator?.name ?? "Management"} - {formatDate(item.created_at)}
-                        </p>
-                      </article>
-                    ))}
+            {activeTenantPanel === "announcements" ? (
+              <section style={styles.contentReveal}>
+                <div style={styles.panel} ref={announcementsRef}>
+                  <div style={styles.sectionHeadRow}>
+                    <div>
+                      <div style={styles.sectionBadge}>Building Updates</div>
+                      <h2 style={styles.sectionTitle}>Announcements</h2>
+                    </div>
+                    <span style={styles.sectionChip}>{dashboard.announcements.length} updates</span>
                   </div>
-                )}
-              </div>
-            </section>
+
+                  {dashboard.announcements.length === 0 ? (
+                    <p style={styles.emptyText}>No announcements available yet.</p>
+                  ) : (
+                    <div style={styles.stack}>
+                      {dashboard.announcements.map((item) => (
+                        <article key={item.id} style={styles.listCard}>
+                          <h3 style={styles.itemTitle}>{item.title}</h3>
+                          <p style={styles.bodyText}>{item.message}</p>
+                          <p style={styles.itemMeta}>
+                            {item.creator?.name ?? "Management"} - {formatDate(item.created_at)}
+                          </p>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </section>
+            ) : null}
           </>
         )}
       </div>
@@ -1023,6 +1095,106 @@ export default function DashboardTenant() {
             <button type="submit" style={styles.chatSendButton} disabled={chatLoading || !chatInput.trim()}>
               Send
             </button>
+          </form>
+        </div>
+      ) : null}
+
+      {showComplaintForm ? (
+        <div
+          style={styles.modalBackdrop}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setShowComplaintForm(false);
+            }
+          }}
+        >
+          <form
+            style={styles.complaintModal}
+            onSubmit={submitComplaint}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div style={styles.modalHeaderRow}>
+              <div>
+                <div style={styles.sectionBadge}>Support Request</div>
+                <h2 style={styles.sectionTitle}>Submit a Complaint</h2>
+              </div>
+              <button
+                type="button"
+                style={styles.modalCloseButton}
+                onClick={() => setShowComplaintForm(false)}
+              >
+                Close
+              </button>
+            </div>
+            <p style={styles.sectionLead}>
+              Share the issue clearly so your manager can respond faster.
+            </p>
+            <div style={styles.formGrid}>
+              <input
+                style={styles.input}
+                placeholder="Complaint title"
+                value={complaintForm.title}
+                onChange={(e) =>
+                  setComplaintForm((current) => ({
+                    ...current,
+                    title: e.target.value,
+                  }))
+                }
+              />
+              <input
+                style={styles.input}
+                placeholder="Category"
+                value={complaintForm.category}
+                onChange={(e) =>
+                  setComplaintForm((current) => ({
+                    ...current,
+                    category: e.target.value,
+                  }))
+                }
+              />
+              <select
+                style={styles.input}
+                value={complaintForm.priority}
+                onChange={(e) =>
+                  setComplaintForm((current) => ({
+                    ...current,
+                    priority: e.target.value,
+                  }))
+                }
+              >
+                <option value="low">Low priority</option>
+                <option value="medium">Medium priority</option>
+                <option value="high">High priority</option>
+              </select>
+            </div>
+            <textarea
+              style={styles.modalTextarea}
+              placeholder="Describe the issue"
+              value={complaintForm.description}
+              onChange={(e) =>
+                setComplaintForm((current) => ({
+                  ...current,
+                  description: e.target.value,
+                }))
+              }
+            />
+            <div style={styles.modalActionsRow}>
+              <button
+                type="button"
+                style={styles.modalSecondaryButton}
+                onClick={() => setShowComplaintForm(false)}
+              >
+                Cancel
+              </button>
+              <button
+                style={{ ...styles.submitBtn, ...styles.modalPrimaryButton }}
+                type="submit"
+                disabled={isSubmittingComplaint}
+              >
+                {isSubmittingComplaint ? "Submitting..." : "Send Complaint"}
+              </button>
+            </div>
+            {renderInlineNotice("submit-complaint")}
           </form>
         </div>
       ) : null}
@@ -1234,6 +1406,24 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 700,
     border: "1px solid transparent",
   },
+  inlineActionNotice: {
+    marginTop: "14px",
+    borderRadius: "18px",
+    padding: "14px 16px",
+    fontWeight: 700,
+    lineHeight: 1.6,
+    border: "1px solid transparent",
+  },
+  inlineActionNoticeSuccess: {
+    background: "rgba(12, 82, 57, 0.34)",
+    color: "#a6f4cd",
+    borderColor: "rgba(84, 196, 141, 0.28)",
+  },
+  inlineActionNoticeError: {
+    background: "rgba(122, 24, 44, 0.3)",
+    color: "#ffc3ce",
+    borderColor: "rgba(255, 135, 158, 0.22)",
+  },
   noticeSuccess: {
     background: "rgba(12, 82, 57, 0.34)",
     color: "#a6f4cd",
@@ -1301,39 +1491,121 @@ const styles: Record<string, CSSProperties> = {
   },
   actionPanelGrid: {
     display: "grid",
-    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-    gap: "16px",
+    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+    gap: "12px",
     marginTop: "12px",
+  },
+  actionCardWrap: {
+    display: "flex",
+    flexDirection: "column",
   },
   actionBtn: {
     border: "1px solid rgba(176, 193, 227, 0.12)",
-    borderRadius: "24px",
-    padding: "22px",
+    borderRadius: "18px",
+    width: "100%",
+    minHeight: "100%",
+    padding: "16px",
     color: "#effaff",
-    fontSize: "15px",
+    fontSize: "14px",
     cursor: "pointer",
     display: "flex",
     flexDirection: "column",
     alignItems: "flex-start",
-    gap: "10px",
+    gap: "8px",
     textAlign: "left",
     fontFamily: "inherit",
   },
   actionTitle: {
-    fontSize: "30px",
+    fontSize: "21px",
     fontWeight: 700,
-    lineHeight: 1.1,
+    lineHeight: 1.2,
   },
   actionText: {
     color: "#9bc0e8",
-    lineHeight: 1.6,
-    fontSize: "15px",
+    lineHeight: 1.45,
+    fontSize: "13px",
   },
   primaryAction: {
     background: "linear-gradient(135deg, rgba(57, 125, 255, 0.96), rgba(31, 190, 234, 0.96))",
   },
   secondaryAction: {
     background: "rgba(28, 37, 68, 0.92)",
+  },
+  activeAction: {
+    borderColor: "rgba(126, 215, 255, 0.42)",
+    boxShadow: "0 0 0 1px rgba(126, 215, 255, 0.18)",
+  },
+  modalBackdrop: {
+    position: "fixed",
+    inset: 0,
+    display: "grid",
+    placeItems: "center",
+    padding: "24px",
+    background: "rgba(3, 9, 25, 0.46)",
+    backdropFilter: "blur(14px)",
+    WebkitBackdropFilter: "blur(14px)",
+    zIndex: 25,
+  },
+  complaintModal: {
+    width: "min(760px, calc(100vw - 32px))",
+    maxHeight: "calc(100vh - 48px)",
+    overflowY: "auto",
+    borderRadius: "30px",
+    padding: "26px",
+    background: "linear-gradient(180deg, rgba(20, 29, 57, 0.98) 0%, rgba(15, 23, 43, 0.98) 100%)",
+    border: "1px solid rgba(176, 193, 227, 0.16)",
+    boxShadow: "0 28px 70px rgba(3, 9, 25, 0.42)",
+  },
+  modalHeaderRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: "18px",
+    marginBottom: "8px",
+  },
+  modalCloseButton: {
+    border: "1px solid rgba(176, 193, 227, 0.16)",
+    borderRadius: "999px",
+    background: "rgba(255, 255, 255, 0.06)",
+    color: "#e7f5ff",
+    padding: "10px 16px",
+    cursor: "pointer",
+    fontWeight: 700,
+    fontFamily: "inherit",
+  },
+  modalTextarea: {
+    width: "100%",
+    boxSizing: "border-box",
+    borderRadius: "16px",
+    border: "1px solid rgba(86, 112, 159, 0.8)",
+    padding: "14px 16px",
+    minHeight: "150px",
+    resize: "vertical",
+    background: "rgba(9, 17, 35, 0.74)",
+    color: "#f7fbff",
+    fontSize: "15px",
+    fontFamily: "inherit",
+    outline: "none",
+  },
+  modalActionsRow: {
+    display: "flex",
+    justifyContent: "flex-end",
+    gap: "12px",
+    marginTop: "16px",
+    flexWrap: "wrap",
+  },
+  modalSecondaryButton: {
+    border: "1px solid rgba(176, 193, 227, 0.18)",
+    borderRadius: "18px",
+    background: "rgba(255, 255, 255, 0.06)",
+    color: "#e6f3ff",
+    padding: "15px 20px",
+    cursor: "pointer",
+    fontWeight: 700,
+    fontFamily: "inherit",
+  },
+  modalPrimaryButton: {
+    marginTop: 0,
   },
   panel: {
     background: "rgba(20, 29, 57, 0.92)",
@@ -1446,10 +1718,8 @@ const styles: Record<string, CSSProperties> = {
     fontFamily: "inherit",
     marginTop: "14px",
   },
-  contentGrid: {
-    display: "grid",
-    gridTemplateColumns: "minmax(0, 1.05fr) minmax(0, 0.95fr)",
-    gap: "18px",
+  contentReveal: {
+    marginTop: "18px",
   },
   stack: {
     display: "flex",

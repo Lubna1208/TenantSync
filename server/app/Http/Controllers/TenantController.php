@@ -6,6 +6,7 @@ use App\Models\Announcement;
 use App\Models\Complaint;
 use App\Models\RentPayment;
 use App\Models\Tenant;
+use App\Support\ValidationRules;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
@@ -130,8 +131,8 @@ class TenantController extends Controller
         }
 
         $validator = Validator::make($request->all(), [
-            'amount' => 'nullable|numeric|min:0',
-        ]);
+            'amount' => ValidationRules::money('nullable'),
+        ], ValidationRules::moneyMessages('amount', 'Payment amount'));
 
         if ($validator->fails()) {
             return response()->json([

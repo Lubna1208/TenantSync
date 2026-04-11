@@ -5,7 +5,7 @@ import Dashboard from "./views/Dashboard";
 import DashboardManager from "./views/DashboardManager";
 import DashboardTenant from "./views/DashboardTenant";
 import AcceptTenantInvitation from "./views/AcceptTenantInvitation";
-import { authFetch, clearStoredAuth } from "./helpers/authApi";
+import { api, clearStoredAuth } from "./api";
 
 type User = {
   id: number;
@@ -83,16 +83,11 @@ export default function App() {
   useEffect(() => {
     async function checkAuth() {
       try {
-        let res = await authFetch("/auth/me", {
-          method: "GET",
-          cache: "no-store",
-        });
+        let res = await api.auth.me();
         let user = await res.json().catch(() => null);
 
         if (!res.ok || !user?.id) {
-          const refreshRes = await authFetch("/auth/refresh", {
-            method: "POST",
-          });
+          const refreshRes = await api.auth.refresh();
           const refreshData = await refreshRes.json().catch(() => null);
 
           if (refreshRes.ok && refreshData?.user?.id) {
@@ -104,10 +99,7 @@ export default function App() {
             localStorage.setItem("ts_token", refreshData.token);
           }
 
-          res = await authFetch("/auth/me", {
-            method: "GET",
-            cache: "no-store",
-          });
+          res = await api.auth.me();
           user = await res.json().catch(() => null);
         }
 
@@ -148,6 +140,18 @@ export default function App() {
 
         <Route
           path="/dashboard-manager"
+          element={
+            <ProtectedRoute
+              allowedRoles={["manager"]}
+              authChecked={authChecked}
+            >
+              <DashboardManager />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/dashboard-manager/actions/:actionType"
           element={
             <ProtectedRoute
               allowedRoles={["manager"]}

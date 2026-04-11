@@ -11,6 +11,7 @@ use App\Models\Tenant;
 use App\Models\TenantInvitation;
 use App\Models\Unit;
 use App\Models\User;
+use App\Support\ValidationRules;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -85,9 +86,9 @@ class ManagerController extends Controller
         $validator = Validator::make($request->all(), [
             'unit_number' => 'required|string|max:255',
             'floor' => 'nullable|string|max:255',
-            'rent_amount' => 'required|numeric|min:0',
+            'rent_amount' => ValidationRules::money(),
             'status' => 'nullable|in:vacant,occupied',
-        ]);
+        ], ValidationRules::moneyMessages('rent_amount', 'Rent amount'));
 
         if ($validator->fails()) {
             return response()->json([
@@ -151,9 +152,9 @@ class ManagerController extends Controller
         $validator = Validator::make($request->all(), [
             'unit_number' => 'sometimes|required|string|max:255',
             'floor' => 'nullable|string|max:255',
-            'rent_amount' => 'sometimes|required|numeric|min:0',
+            'rent_amount' => ValidationRules::money('sometimes|required'),
             'status' => 'nullable|in:vacant,occupied',
-        ]);
+        ], ValidationRules::moneyMessages('rent_amount', 'Rent amount'));
 
         if ($validator->fails()) {
             return response()->json([
@@ -562,11 +563,11 @@ class ManagerController extends Controller
 
         $validator = Validator::make($request->all(), [
             'tenant_id' => 'required|integer',
-            'amount' => 'required|numeric|min:0',
+            'amount' => ValidationRules::money(),
             'payment_month' => 'required|date_format:Y-m',
             'payment_date' => 'nullable|date',
             'status' => 'nullable|in:paid,unpaid,pending',
-        ]);
+        ], ValidationRules::moneyMessages('amount', 'Payment amount'));
 
         if ($validator->fails()) {
             return response()->json([

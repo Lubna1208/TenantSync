@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { apiUrl } from "../helpers/authApi";
+import { getApiMessage } from "../helpers/apiMessages";
+import { api } from "../api";
 
 type InvitationData = {
   tenant_name?: string | null;
@@ -64,15 +65,13 @@ export default function AcceptTenantInvitation() {
     setMessage("");
 
     try {
-      const res = await fetch(apiUrl(`/tenant-invitations/${invitationToken}`), {
-        cache: "no-store",
-      });
+      const res = await api.invitation.show(invitationToken);
 
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
         setInvitation(null);
-        setError(data?.message ?? "Invalid or expired link");
+        setError(getApiMessage(data, "Invalid or expired link"));
         return;
       }
 
@@ -97,17 +96,12 @@ export default function AcceptTenantInvitation() {
     setMessage("");
 
     try {
-      const res = await fetch(apiUrl(`/tenant-invitations/${token}/accept`), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify(form),
-      });
+      const res = await api.invitation.accept(token, form);
 
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
-        setError(data?.message ?? "Invitation could not be accepted.");
+        setError(getApiMessage(data, "Invitation could not be accepted."));
         return;
       }
 

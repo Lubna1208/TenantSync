@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Unit;
 use App\Models\Apartment;
+use App\Support\ValidationRules;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
 
@@ -31,9 +32,9 @@ class UnitController extends Controller
             'apartment_id' => 'required|exists:apartments,id',
             'unit_number' => 'required|string|max:255',
             'floor' => 'nullable|string|max:255',
-            'rent_amount' => 'required|numeric|min:0',
+            'rent_amount' => ValidationRules::money(),
             'status' => 'nullable|in:vacant,occupied',
-        ]);
+        ], ValidationRules::moneyMessages('rent_amount', 'Rent amount'));
 
         if ($validator->fails()) {
             return response()->json([
@@ -110,9 +111,9 @@ class UnitController extends Controller
             'apartment_id' => 'sometimes|required|exists:apartments,id',
             'unit_number' => 'sometimes|required|string|max:255',
             'floor' => 'nullable|string|max:255',
-            'rent_amount' => 'sometimes|required|numeric|min:0',
+            'rent_amount' => ValidationRules::money('sometimes|required'),
             'status' => 'nullable|in:vacant,occupied',
-        ]);
+        ], ValidationRules::moneyMessages('rent_amount', 'Rent amount'));
 
         if ($validator->fails()) {
             return response()->json([

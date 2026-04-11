@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { authFetch, clearStoredAuth } from "../helpers/authApi";
+import { api, clearStoredAuth } from "../api";
+import { getApiMessage } from "../helpers/apiMessages";
 
 type User = {
   id: number;
@@ -40,6 +41,12 @@ type OwnerStat = {
   id: OwnerStatId;
   label: string;
   value: ReactNode;
+};
+
+type InlineNotice = {
+  key: string;
+  text: string;
+  tone: "success" | "error";
 };
 
 function safeParseUser(raw: string | null): User | null {
@@ -125,42 +132,6 @@ function getInitials(name: string) {
   return parts.map((part) => part[0]?.toUpperCase() ?? "").join("");
 }
 
-function getFirstValidationError(errors: unknown): string | null {
-  if (!errors || typeof errors !== "object") {
-    return null;
-  }
-
-  for (const value of Object.values(errors as Record<string, unknown>)) {
-    if (Array.isArray(value) && typeof value[0] === "string") {
-      return value[0];
-    }
-
-    if (typeof value === "string") {
-      return value;
-    }
-  }
-
-  return null;
-}
-
-function getFailureMessage(
-  data: { message?: string; errors?: unknown } | null,
-  fallback: string
-) {
-  const firstValidationError = getFirstValidationError(data?.errors);
-  const message = data?.message?.trim();
-
-  if (message && message.toLowerCase() !== "validation failed" && message.toLowerCase() !== "validation failed.") {
-    return message;
-  }
-
-  if (firstValidationError) {
-    return firstValidationError;
-  }
-
-  return message || fallback;
-}
-
 export default function Dashboard() {
   const navigate = useNavigate();
   const propertySectionRef = useRef<HTMLElement | null>(null);
@@ -173,6 +144,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [inlineNotice, setInlineNotice] = useState<InlineNotice | null>(null);
   const [noticeContext, setNoticeContext] = useState<NoticeContext | null>(null);
   const [hoveredStat, setHoveredStat] = useState<OwnerStatId | null>(null);
   const [hoveredSurface, setHoveredSurface] = useState<string | null>(null);
@@ -221,18 +193,28 @@ export default function Dashboard() {
     return () => window.clearTimeout(timeoutId);
   }, [visibleNotice]);
 
+  useEffect(() => {
+    if (!inlineNotice) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setInlineNotice((current) =>
+        current?.key === inlineNotice.key ? null : current
+      );
+    }, 5000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [inlineNotice]);
+
   async function loadOwnerData() {
     setLoading(true);
     setError("");
 
     try {
       const [propertiesRes, managersRes] = await Promise.all([
-        authFetch("/owner/properties", {
-          cache: "no-store",
-        }),
-        authFetch("/owner/managers", {
-          cache: "no-store",
-        }),
+        api.owner.properties(),
+        api.owner.managers(),
       ]);
 
       if (!propertiesRes.ok || !managersRes.ok) {
@@ -258,9 +240,7 @@ export default function Dashboard() {
 
   async function logout() {
     try {
-      await authFetch("/auth/logout", {
-        method: "POST",
-      });
+      await api.auth.logout();
     } catch {
       // ignore network error
     }
@@ -274,6 +254,33 @@ export default function Dashboard() {
     setMessage("");
     setError("");
     setNoticeContext(null);
+  }
+
+  function showInlineNotice(
+    key: string,
+    text: string,
+    tone: InlineNotice["tone"]
+  ) {
+    setInlineNotice({ key, text, tone });
+  }
+
+  function renderInlineNotice(key: string) {
+    if (inlineNotice?.key !== key) {
+      return null;
+    }
+
+    return (
+      <div
+        style={{
+          ...styles.inlineActionNotice,
+          ...(inlineNotice.tone === "error"
+            ? styles.inlineActionNoticeError
+            : styles.inlineActionNoticeSuccess),
+        }}
+      >
+        {inlineNotice.text}
+      </div>
+    );
   }
 
   function setSuccess(text: string, context: NoticeContext = "general") {
@@ -293,16 +300,12 @@ export default function Dashboard() {
     clearNotice();
 
     try {
-      const res = await authFetch("/owner/managers", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(managerForm),
-      });
+      const res = await api.owner.createManager(managerForm);
 
       const data = await parseResponse<{ message?: string; errors?: unknown }>(res);
 
       if (!res.ok) {
-        setFailure(getFailureMessage(data, "Manager creation failed."), "manager");
+        showInlineNotice("create-manager", getApiMessage(data, "Manager creation failed."), "error");
         return;
       }
 
@@ -312,10 +315,10 @@ export default function Dashboard() {
         password: "",
         password_confirmation: "",
       });
-      setSuccess(data?.message ?? "Manager created successfully.", "manager");
+      showInlineNotice("create-manager", data?.message ?? "Manager created successfully.", "success");
       await loadOwnerData();
     } catch {
-      setFailure("Network error while creating manager.", "manager");
+      showInlineNotice("create-manager", "Network error while creating manager.", "error");
     }
   }
 
@@ -324,22 +327,18 @@ export default function Dashboard() {
     clearNotice();
 
     try {
-      const res = await authFetch("/owner/properties", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...propertyForm,
-          total_units: Number(propertyForm.total_units),
-          manager_id: propertyForm.manager_id
-            ? Number(propertyForm.manager_id)
-            : null,
-        }),
+      const res = await api.owner.createProperty({
+        ...propertyForm,
+        total_units: Number(propertyForm.total_units),
+        manager_id: propertyForm.manager_id
+          ? Number(propertyForm.manager_id)
+          : null,
       });
 
       const data = await parseResponse<{ message?: string; errors?: unknown }>(res);
 
       if (!res.ok) {
-        setFailure(getFailureMessage(data, "Property creation failed."), "property");
+        showInlineNotice("create-property", getApiMessage(data, "Property creation failed."), "error");
         return;
       }
 
@@ -349,10 +348,10 @@ export default function Dashboard() {
         total_units: "",
         manager_id: "",
       });
-      setSuccess(data?.message ?? "Property created successfully.", "property");
+      showInlineNotice("create-property", data?.message ?? "Property created successfully.", "success");
       await loadOwnerData();
     } catch {
-      setFailure("Network error while creating property.", "property");
+      showInlineNotice("create-property", "Network error while creating property.", "error");
     }
   }
 
@@ -360,21 +359,19 @@ export default function Dashboard() {
     clearNotice();
 
     try {
-      const res = await authFetch(`/owner/managers/${id}`, {
-        method: "DELETE",
-      });
+      const res = await api.owner.removeManager(id);
 
       const data = await parseResponse<{ message?: string }>(res);
 
       if (!res.ok) {
-        setFailure(data?.message ?? "Manager removal failed.", "manager");
+        showInlineNotice(`remove-manager-${id}`, getApiMessage(data, "Manager removal failed."), "error");
         return;
       }
 
-      setSuccess(data?.message ?? "Manager removed successfully.", "manager");
+      showInlineNotice(`remove-manager-${id}`, data?.message ?? "Manager removed successfully.", "success");
       await loadOwnerData();
     } catch {
-      setFailure("Network error while removing manager.", "manager");
+      showInlineNotice(`remove-manager-${id}`, "Network error while removing manager.", "error");
     }
   }
 
@@ -382,21 +379,19 @@ export default function Dashboard() {
     clearNotice();
 
     try {
-      const res = await authFetch(`/owner/properties/${id}`, {
-        method: "DELETE",
-      });
+      const res = await api.owner.removeProperty(id);
 
       const data = await parseResponse<{ message?: string }>(res);
 
       if (!res.ok) {
-        setFailure(data?.message ?? "Property deletion failed.", "property");
+        showInlineNotice(`remove-property-${id}`, getApiMessage(data, "Property deletion failed."), "error");
         return;
       }
 
-      setSuccess(data?.message ?? "Property deleted successfully.", "property");
+      showInlineNotice(`remove-property-${id}`, data?.message ?? "Property deleted successfully.", "success");
       await loadOwnerData();
     } catch {
-      setFailure("Network error while deleting property.", "property");
+      showInlineNotice(`remove-property-${id}`, "Network error while deleting property.", "error");
     }
   }
 
@@ -404,25 +399,22 @@ export default function Dashboard() {
     clearNotice();
 
     try {
-      const res = await authFetch(`/owner/properties/${propertyId}/manager`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          manager_id: managerId ? Number(managerId) : null,
-        }),
-      });
+      const res = await api.owner.assignManager(
+        propertyId,
+        managerId ? Number(managerId) : null
+      );
 
       const data = await parseResponse<{ message?: string; errors?: unknown }>(res);
 
       if (!res.ok) {
-        setFailure(getFailureMessage(data, "Manager assignment failed."), "property");
+        showInlineNotice(`assign-manager-${propertyId}`, getApiMessage(data, "Manager assignment failed."), "error");
         return;
       }
 
-      setSuccess(data?.message ?? "Manager assignment updated.", "property");
+      showInlineNotice(`assign-manager-${propertyId}`, data?.message ?? "Manager assignment updated.", "success");
       await loadOwnerData();
     } catch {
-      setFailure("Network error while assigning manager.", "property");
+      showInlineNotice(`assign-manager-${propertyId}`, "Network error while assigning manager.", "error");
     }
   }
 
@@ -678,17 +670,6 @@ export default function Dashboard() {
         <div style={styles.pairedSectionHeader}>
           <span style={styles.pairedSectionEyebrow}>Property Action</span>
         </div>
-        {activeNotice && noticeContext === "property" && (
-          <div
-            style={{
-              ...styles.notice,
-              ...styles.pairNotice,
-              ...(error ? styles.noticeError : styles.noticeSuccess),
-            }}
-          >
-            {activeNotice}
-          </div>
-        )}
         <div style={styles.dashboardPairGrid}>
           <form
             onSubmit={createProperty}
@@ -801,6 +782,7 @@ export default function Dashboard() {
             >
               Save Property
             </button>
+            {renderInlineNotice("create-property")}
           </form>
 
         <div
@@ -865,6 +847,7 @@ export default function Dashboard() {
                       >
                         Delete
                       </button>
+                      {renderInlineNotice(`remove-property-${property.id}`)}
 
                       <label style={styles.propertySelectGroup}>
                         <span style={styles.propertyLabel}>Manager</span>
@@ -885,6 +868,7 @@ export default function Dashboard() {
                           ))}
                         </select>
                       </label>
+                      {renderInlineNotice(`assign-manager-${property.id}`)}
 
                       <span style={styles.propertyAssignmentText}>
                         {property.manager
@@ -906,17 +890,6 @@ export default function Dashboard() {
         <div style={styles.pairedSectionHeader}>
           <span style={styles.pairedSectionEyebrow}>Manager Action</span>
         </div>
-        {activeNotice && noticeContext === "manager" && (
-          <div
-            style={{
-              ...styles.notice,
-              ...styles.pairNotice,
-              ...(error ? styles.noticeError : styles.noticeSuccess),
-            }}
-          >
-            {activeNotice}
-          </div>
-        )}
         <div style={styles.dashboardPairGrid}>
           <form
             onSubmit={createManager}
@@ -1018,6 +991,7 @@ export default function Dashboard() {
             >
               Save Manager
             </button>
+            {renderInlineNotice("create-manager")}
           </form>
 
         <div
@@ -1066,6 +1040,7 @@ export default function Dashboard() {
                       Remove
                     </button>
                   </div>
+                  {renderInlineNotice(`remove-manager-${manager.id}`)}
 
                   <div style={styles.managerMetaRow}>
                     <span style={styles.metaPill}>
@@ -1243,6 +1218,23 @@ const styles: { [key: string]: CSSProperties } = {
     borderRadius: "16px",
     padding: "14px 16px",
     fontWeight: 600,
+  },
+  inlineActionNotice: {
+    marginTop: "14px",
+    borderRadius: "16px",
+    padding: "12px 14px",
+    fontWeight: 600,
+    lineHeight: 1.5,
+  },
+  inlineActionNoticeSuccess: {
+    background: "rgba(32, 201, 151, 0.14)",
+    color: "#8df0cb",
+    border: "1px solid rgba(32, 201, 151, 0.2)",
+  },
+  inlineActionNoticeError: {
+    background: "rgba(248, 113, 113, 0.14)",
+    color: "#ffb2b2",
+    border: "1px solid rgba(248, 113, 113, 0.22)",
   },
   pairNotice: {
     marginBottom: "18px",

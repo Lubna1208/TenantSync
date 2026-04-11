@@ -116,10 +116,14 @@ export default function ApartmentTable({
                   <td>{apartment.lastPayment}</td>
                   <td>
                     <div className="table-action-group">
-                      <button className="table-action-btn">View</button>
-                      <button className="table-action-btn">Edit</button>
-                      <button className="table-action-btn">Notice</button>
-                      <button className="table-action-btn">Maintenance</button>
+                      <button
+                        type="button"
+                        className="table-action-btn table-action-btn-disabled"
+                        disabled
+                        title="Detailed unit tools are coming soon."
+                      >
+                        Coming Soon
+                      </button>
                     </div>
                   </td>
                 </tr>

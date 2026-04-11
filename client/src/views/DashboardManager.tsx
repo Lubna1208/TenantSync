@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 
 import ManagerHeaderPolished from "../components/manager/ManagerHeaderPolished";
 import StatsCards from "../components/manager/StatsCards";
 import ApartmentTable from "../components/manager/ApartmentTable";
-import { authFetch, clearStoredAuth } from "../helpers/authApi";
+import { getApiMessage } from "../helpers/apiMessages";
+import { api, clearStoredAuth } from "../api";
 
 import "../styles/managerDashboard.css";
 
@@ -113,15 +114,33 @@ type ComplaintItem = {
 type AnnouncementItem = {
   id: number;
   created_by?: number;
+  title?: string;
+  message?: string;
+  target_role?: "tenant" | "manager" | "all" | string | null;
+  created_at?: string | null;
 };
 
 type NoticeContext = "general" | "actions" | "communication" | "payment";
+type ManagerSectionKey = "units" | "actions" | "communication" | "payments";
+type ManagerActionPanel = "assign-tenant" | "create-unit" | "remove-tenant" | null;
+
+const MANAGER_ACTION_ROUTES = new Set<Exclude<ManagerActionPanel, null>>([
+  "assign-tenant",
+  "create-unit",
+  "remove-tenant",
+]);
 
 type AssignTenantResponse = {
   message?: string;
   invitation?: {
     invitation_url?: string | null;
   } | null;
+};
+
+type InlineNotice = {
+  key: string;
+  text: string;
+  tone: "success" | "error";
 };
 
 function safeParseUser(raw: string | null): User | null {
@@ -190,42 +209,6 @@ function titleCase(value: string) {
   return value.split("_").join(" ").replace(/\\b\\w/g, (letter: string) => letter.toUpperCase());
 }
 
-function getFirstValidationError(errors: unknown): string | null {
-  if (!errors || typeof errors !== "object") {
-    return null;
-  }
-
-  for (const value of Object.values(errors as Record<string, unknown>)) {
-    if (Array.isArray(value) && typeof value[0] === "string") {
-      return value[0];
-    }
-
-    if (typeof value === "string") {
-      return value;
-    }
-  }
-
-  return null;
-}
-
-function getFailureMessage(
-  data: { message?: string; errors?: unknown } | null,
-  fallback: string
-) {
-  const firstValidationError = getFirstValidationError(data?.errors);
-  const message = data?.message?.trim();
-
-  if (message && message.toLowerCase() !== "validation failed" && message.toLowerCase() !== "validation failed.") {
-    return message;
-  }
-
-  if (firstValidationError) {
-    return firstValidationError;
-  }
-
-  return message || fallback;
-}
-
 async function generateGeminiText(prompt: string) {
   let lastErrorMessage = "Gemini API request failed.";
 
@@ -260,6 +243,7 @@ async function generateGeminiText(prompt: string) {
 
 export default function DashboardManager() {
   const navigate = useNavigate();
+  const { actionType } = useParams<{ actionType?: string }>();
   const unitOverviewRef = useRef<HTMLElement | null>(null);
   const managerActionsRef = useRef<HTMLElement | null>(null);
   const tenantCommunicationRef = useRef<HTMLElement | null>(null);
@@ -272,13 +256,27 @@ export default function DashboardManager() {
   const [activeFilter, setActiveFilter] = useState("all");
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
   const [complaints, setComplaints] = useState<ComplaintItem[]>([]);
+  const [announcements, setAnnouncements] = useState<AnnouncementItem[]>([]);
   const [announcementsCount, setAnnouncementsCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [inlineNotice, setInlineNotice] = useState<InlineNotice | null>(null);
   const [noticeContext, setNoticeContext] = useState<NoticeContext>("general");
   const [invitePreviewUrl, setInvitePreviewUrl] = useState("");
-  const [unitForm, setUnitForm] = useState({
+  const [activeOverviewSection, setActiveOverviewSection] = useState<ManagerSectionKey>("units");
+  const [activeManagerPanel, setActiveManagerPanel] = useState<ManagerActionPanel>(null);
+  const [complaintSearchTerm, setComplaintSearchTerm] = useState("");
+  const [complaintStatusFilter, setComplaintStatusFilter] = useState<"all" | ComplaintItem["status"]>("all");
+  const [complaintPriorityFilter, setComplaintPriorityFilter] = useState<"all" | "high" | "medium" | "low">("all");
+  const [paymentSearchTerm, setPaymentSearchTerm] = useState("");
+  const [paymentStatusFilter, setPaymentStatusFilter] = useState<"all" | PaymentReportItem["status"]>("all");
+  const [unitForm, setUnitForm] = useState<{
+    unit_number: string;
+    floor: string;
+    rent_amount: string;
+    status: "vacant" | "occupied";
+  }>({
     unit_number: "",
     floor: "",
     rent_amount: "",
@@ -326,20 +324,110 @@ export default function DashboardManager() {
     };
   }, [message, error]);
 
+  useEffect(() => {
+    if (!inlineNotice) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setInlineNotice((current) =>
+        current?.key === inlineNotice.key ? null : current
+      );
+    }, 5000);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [inlineNotice]);
+
+  useEffect(() => {
+    if (typeof IntersectionObserver === "undefined") {
+      return;
+    }
+
+    const sections: Array<[ManagerSectionKey, HTMLElement | null]> = [
+      ["units", unitOverviewRef.current],
+      ["actions", managerActionsRef.current],
+      ["communication", tenantCommunicationRef.current],
+      ["payments", paymentSectionRef.current],
+    ];
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visibleEntries = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((left, right) => right.intersectionRatio - left.intersectionRatio);
+
+        if (visibleEntries.length === 0) {
+          return;
+        }
+
+        const matchedSection = sections.find(([, element]) => element === visibleEntries[0].target);
+
+        if (matchedSection) {
+          setActiveOverviewSection(matchedSection[0]);
+        }
+      },
+      {
+        threshold: [0.2, 0.45, 0.7],
+        rootMargin: "-22% 0px -48% 0px",
+      }
+    );
+
+    sections.forEach(([, element]) => {
+      if (element) {
+        observer.observe(element);
+      }
+    });
+
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!actionType) {
+      setActiveManagerPanel(null);
+      return;
+    }
+
+    if (MANAGER_ACTION_ROUTES.has(actionType as Exclude<ManagerActionPanel, null>)) {
+      setActiveManagerPanel(actionType as Exclude<ManagerActionPanel, null>);
+      setActiveOverviewSection("actions");
+      return;
+    }
+
+    navigate("/dashboard-manager", { replace: true });
+  }, [actionType, navigate]);
+
+  useEffect(() => {
+    if (!activeManagerPanel) {
+      return;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        navigate("/dashboard-manager", { replace: true });
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [activeManagerPanel, navigate]);
+
   async function loadDashboard() {
     setLoading(true);
 
     try {
       const [dashboardRes, complaintsRes, announcementsRes] = await Promise.all([
-        authFetch("/manager/dashboard", {
-          cache: "no-store",
-        }),
-        authFetch("/manager/complaints", {
-          cache: "no-store",
-        }),
-        authFetch("/announcements", {
-          cache: "no-store",
-        }),
+        api.manager.dashboard(),
+        api.manager.complaints(),
+        api.manager.announcements(),
       ]);
 
       const dashboardData = await dashboardRes.json().catch(() => null);
@@ -354,19 +442,23 @@ export default function DashboardManager() {
       }
 
       if (!dashboardRes.ok || !dashboardData) {
-        setFailure(dashboardData?.message ?? "Manager dashboard could not be loaded.", "general");
+        setFailure(getApiMessage(dashboardData, "Manager dashboard could not be loaded."), "general");
         setDashboard(null);
         setComplaints([]);
+        setAnnouncements([]);
         setAnnouncementsCount(0);
         return;
       }
 
+      const announcementList = (announcementsData?.data as AnnouncementItem[] | undefined) ?? [];
+
       setDashboard(dashboardData.data ?? null);
       setComplaints(complaintsData?.data ?? []);
+      setAnnouncements(announcementList);
       setAnnouncementsCount(
-        (announcementsData?.data as AnnouncementItem[] | undefined)?.filter(
+        announcementList.filter(
           (item) => item.created_by === user?.id
-        ).length ?? 0
+        ).length
       );
 
       if (dashboardData.data === null) {
@@ -381,9 +473,7 @@ export default function DashboardManager() {
 
   async function logout() {
     try {
-      await authFetch("/auth/logout", {
-        method: "POST",
-      });
+      await api.auth.logout();
     } catch {
       // ignore logout API error
     }
@@ -412,7 +502,40 @@ export default function DashboardManager() {
     setNoticeContext(context);
   }
 
-  function scrollToSection(section: "units" | "actions" | "communication" | "payments") {
+  function showInlineNotice(
+    key: string,
+    text: string,
+    tone: InlineNotice["tone"]
+  ) {
+    setInlineNotice({ key, text, tone });
+  }
+
+  function renderInlineNotice(key: string) {
+    if (inlineNotice?.key !== key) {
+      return null;
+    }
+
+    return (
+      <>
+        <div
+          className={`manager-alert manager-section-alert ${inlineNotice.tone}`}
+          style={{ marginTop: "12px", marginBottom: 0 }}
+        >
+          {inlineNotice.text}
+        </div>
+        {key === "assign-tenant" && invitePreviewUrl ? (
+          <div
+            className="manager-alert manager-section-alert success"
+            style={{ marginTop: "10px", marginBottom: 0 }}
+          >
+            Invitation link for local testing: {invitePreviewUrl}
+          </div>
+        ) : null}
+      </>
+    );
+  }
+
+  function scrollToSection(section: ManagerSectionKey) {
     const sectionMap = {
       units: unitOverviewRef,
       actions: managerActionsRef,
@@ -420,10 +543,19 @@ export default function DashboardManager() {
       payments: paymentSectionRef,
     } as const;
 
+    setActiveOverviewSection(section);
     sectionMap[section].current?.scrollIntoView({
       behavior: "smooth",
       block: "start",
     });
+  }
+
+  function openManagerActionPanel(panel: Exclude<ManagerActionPanel, null>) {
+    navigate(`/dashboard-manager/actions/${panel}`);
+  }
+
+  function closeManagerActionPanel() {
+    navigate("/dashboard-manager", { replace: true });
   }
 
   async function createUnit(e: FormEvent) {
@@ -431,19 +563,15 @@ export default function DashboardManager() {
     clearNotice();
 
     try {
-      const res = await authFetch("/manager/units", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...unitForm,
-          rent_amount: Number(unitForm.rent_amount),
-        }),
+      const res = await api.manager.createUnit({
+        ...unitForm,
+        rent_amount: unitForm.rent_amount.trim() === "" ? null : Number(unitForm.rent_amount),
       });
 
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
-        setFailure(getFailureMessage(data, "Unit creation failed."), "actions");
+        showInlineNotice("create-unit", getApiMessage(data, "Unit creation failed."), "error");
         return;
       }
 
@@ -453,10 +581,10 @@ export default function DashboardManager() {
         rent_amount: "",
         status: "vacant",
       });
-      setSuccess(data?.message ?? "Unit created successfully.", "actions");
+      showInlineNotice("create-unit", data?.message ?? "Unit created successfully.", "success");
       await loadDashboard();
     } catch {
-      setFailure("Network error while creating unit.", "actions");
+      showInlineNotice("create-unit", "Network error while creating unit.", "error");
     }
   }
 
@@ -465,30 +593,23 @@ export default function DashboardManager() {
     clearNotice();
 
     if (!tenantForm.unit_id) {
-      setFailure("Please choose a unit first.", "actions");
+      showInlineNotice("assign-tenant", "Please choose a unit first.", "error");
       return;
     }
 
     try {
-      const res = await authFetch(
-        `/manager/units/${tenantForm.unit_id}/assign-tenant`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ...tenantForm,
-            date_of_birth: tenantForm.date_of_birth || null,
-            move_in_date: tenantForm.move_in_date || null,
-            lease_start: tenantForm.lease_start || null,
-            lease_end: tenantForm.lease_end || null,
-          }),
-        }
-      );
+      const res = await api.manager.assignTenant(tenantForm.unit_id, {
+        ...tenantForm,
+        date_of_birth: tenantForm.date_of_birth || null,
+        move_in_date: tenantForm.move_in_date || null,
+        lease_start: tenantForm.lease_start || null,
+        lease_end: tenantForm.lease_end || null,
+      });
 
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
-        setFailure(getFailureMessage(data, "Tenant assignment failed."), "actions");
+        showInlineNotice("assign-tenant", getApiMessage(data, "Tenant assignment failed."), "error");
         return;
       }
 
@@ -504,10 +625,10 @@ export default function DashboardManager() {
       setInvitePreviewUrl(
         ((data as AssignTenantResponse | null)?.invitation?.invitation_url ?? "").trim()
       );
-      setSuccess(data?.message ?? "Tenant invitation sent successfully.", "actions");
+      showInlineNotice("assign-tenant", data?.message ?? "Tenant invitation sent successfully.", "success");
       await loadDashboard();
     } catch {
-      setFailure("Network error while assigning tenant.", "actions");
+      showInlineNotice("assign-tenant", "Network error while assigning tenant.", "error");
     }
   }
 
@@ -515,27 +636,25 @@ export default function DashboardManager() {
     clearNotice();
 
     if (!removeTenantUnitId) {
-      setFailure("Please choose an occupied unit first.", "actions");
+      showInlineNotice("remove-tenant", "Please choose an occupied unit first.", "error");
       return;
     }
 
     try {
-      const res = await authFetch(`/manager/units/${removeTenantUnitId}/tenant`, {
-        method: "DELETE",
-      });
+      const res = await api.manager.removeTenant(removeTenantUnitId);
 
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
-        setFailure(getFailureMessage(data, "Could not remove tenant."), "actions");
+        showInlineNotice("remove-tenant", getApiMessage(data, "Could not remove tenant."), "error");
         return;
       }
 
       setRemoveTenantUnitId("");
-      setSuccess(data?.message ?? "Tenant removed successfully.", "actions");
+      showInlineNotice("remove-tenant", data?.message ?? "Tenant removed successfully.", "success");
       await loadDashboard();
     } catch {
-      setFailure("Network error while removing tenant.", "actions");
+      showInlineNotice("remove-tenant", "Network error while removing tenant.", "error");
     }
   }
 
@@ -543,23 +662,19 @@ export default function DashboardManager() {
     clearNotice();
 
     try {
-      const res = await authFetch(`/manager/complaints/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status }),
-      });
+      const res = await api.manager.updateComplaint(id, status);
 
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
-        setFailure(getFailureMessage(data, "Complaint update failed."), "communication");
+        showInlineNotice(`complaint-status-${id}`, getApiMessage(data, "Complaint update failed."), "error");
         return;
       }
 
-      setSuccess(data?.message ?? "Complaint updated successfully.", "communication");
+      showInlineNotice(`complaint-status-${id}`, data?.message ?? "Complaint updated successfully.", "success");
       await loadDashboard();
     } catch {
-      setFailure("Network error while updating complaint.", "communication");
+      showInlineNotice(`complaint-status-${id}`, "Network error while updating complaint.", "error");
     }
   }
 
@@ -568,16 +683,12 @@ export default function DashboardManager() {
     clearNotice();
 
     try {
-      const res = await authFetch("/manager/announcements", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(announcementForm),
-      });
+      const res = await api.manager.publishAnnouncement(announcementForm);
 
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
-        setFailure(getFailureMessage(data, "Announcement could not be published."), "communication");
+        showInlineNotice("publish-announcement", getApiMessage(data, "Announcement could not be published."), "error");
         return;
       }
 
@@ -586,10 +697,10 @@ export default function DashboardManager() {
         message: "",
         target_role: "tenant",
       });
-      setAnnouncementsCount((current) => current + 1);
-      setSuccess(data?.message ?? "Announcement published successfully.", "communication");
+      showInlineNotice("publish-announcement", data?.message ?? "Announcement published successfully.", "success");
+      await loadDashboard();
     } catch {
-      setFailure("Network error while publishing announcement.", "communication");
+      showInlineNotice("publish-announcement", "Network error while publishing announcement.", "error");
     }
   }
 
@@ -641,7 +752,7 @@ Write the reply now:`;
     const managerReply = replyMap[complaint.id]?.trim();
 
     if (!managerReply) {
-      setFailure("Generate or write a reply before sending it to the tenant.", "communication");
+      showInlineNotice(`complaint-tools-${complaint.id}`, "Generate or write a reply before sending it to the tenant.", "error");
       return;
     }
 
@@ -649,16 +760,12 @@ Write the reply now:`;
     clearNotice();
 
     try {
-      const res = await authFetch(`/manager/complaints/${complaint.id}/reply`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ manager_reply: managerReply }),
-      });
+      const res = await api.manager.replyToComplaint(complaint.id, managerReply);
 
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
-        setFailure(getFailureMessage(data, "Could not send the reply to the tenant."), "communication");
+        showInlineNotice(`complaint-tools-${complaint.id}`, getApiMessage(data, "Could not send the reply to the tenant."), "error");
         return;
       }
 
@@ -666,10 +773,10 @@ Write the reply now:`;
         ...prev,
         [complaint.id]: data?.data?.manager_reply ?? managerReply,
       }));
-      setSuccess(data?.message ?? "Reply sent to tenant successfully.", "communication");
+      showInlineNotice(`complaint-tools-${complaint.id}`, data?.message ?? "Reply sent to tenant successfully.", "success");
       await loadDashboard();
     } catch {
-      setFailure("Network error while sending reply to the tenant.", "communication");
+      showInlineNotice(`complaint-tools-${complaint.id}`, "Network error while sending reply to the tenant.", "error");
     } finally {
       setSendingReplyId(null);
     }
@@ -683,14 +790,15 @@ Write the reply now:`;
 
     try {
       await navigator.clipboard.writeText(reply);
-      setSuccess("AI reply copied to clipboard.", "communication");
+      showInlineNotice(`complaint-tools-${complaintId}`, "AI reply copied to clipboard.", "success");
     } catch {
-      setFailure("Could not copy the AI reply.", "communication");
+      showInlineNotice(`complaint-tools-${complaintId}`, "Could not copy the AI reply.", "error");
     }
   }
 
   const property = dashboard?.property ?? null;
   const units = property?.units ?? [];
+  const occupiedUnits = units.filter((unit) => unit.status === "occupied");
   const assignableUnits = units.filter((unit) => {
     if (unit.status === "vacant") {
       return true;
@@ -700,6 +808,328 @@ Write the reply now:`;
     return activeTenant?.user?.status === "inactive";
   });
   const paymentReport = dashboard?.payments ?? [];
+  const leaseDatesInvalid =
+    !!tenantForm.lease_start &&
+    !!tenantForm.lease_end &&
+    new Date(tenantForm.lease_end).getTime() < new Date(tenantForm.lease_start).getTime();
+  const filteredComplaints = complaints.filter((complaint) => {
+    const normalizedSearch = complaintSearchTerm.trim().toLowerCase();
+    const tenantName = complaint.tenant?.user?.name?.toLowerCase() ?? "";
+    const unitNumber = complaint.unit?.unit_number?.toLowerCase() ?? "";
+    const haystack = [
+      complaint.title,
+      complaint.description,
+      complaint.category ?? "",
+      tenantName,
+      unitNumber,
+    ]
+      .join(" ")
+      .toLowerCase();
+
+    const matchesSearch = !normalizedSearch || haystack.includes(normalizedSearch);
+    const matchesStatus = complaintStatusFilter === "all" || complaint.status === complaintStatusFilter;
+    const matchesPriority =
+      complaintPriorityFilter === "all" ||
+      (complaint.priority ?? "medium").toLowerCase() === complaintPriorityFilter;
+
+    return matchesSearch && matchesStatus && matchesPriority;
+  });
+  const filteredPaymentReport = paymentReport.filter((payment) => {
+    const normalizedSearch = paymentSearchTerm.trim().toLowerCase();
+    const tenantName = payment.tenant?.user?.name?.toLowerCase() ?? "";
+    const unitNumber = payment.unit?.unit_number?.toLowerCase() ?? "";
+    const monthLabel = formatMonth(payment.payment_month).toLowerCase();
+    const haystack = [tenantName, unitNumber, monthLabel, payment.status].join(" ").toLowerCase();
+
+    const matchesSearch = !normalizedSearch || haystack.includes(normalizedSearch);
+    const matchesStatus = paymentStatusFilter === "all" || payment.status === paymentStatusFilter;
+
+    return matchesSearch && matchesStatus;
+  });
+  const recentAnnouncements = [...announcements]
+    .sort((left, right) => {
+      const leftTime = left.created_at ? new Date(left.created_at).getTime() : 0;
+      const rightTime = right.created_at ? new Date(right.created_at).getTime() : 0;
+      return rightTime - leftTime;
+    })
+    .slice(0, 4);
+  const selectedRemoveUnit = occupiedUnits.find((unit) => String(unit.id) === removeTenantUnitId) ?? null;
+  const complaintFiltersActive =
+    complaintSearchTerm.trim() !== "" ||
+    complaintStatusFilter !== "all" ||
+    complaintPriorityFilter !== "all";
+  const paymentFiltersActive = paymentSearchTerm.trim() !== "" || paymentStatusFilter !== "all";
+  const isManagerActionPage = activeManagerPanel !== null;
+
+  function renderManagerActionPanel() {
+    if (activeManagerPanel === "assign-tenant") {
+      return (
+        <form
+          className="dashboard-panel dashboard-side-panel manager-form assign-tenant-form manager-action-panel manager-action-modal-card"
+          onSubmit={assignTenant}
+        >
+          <div className="manager-action-modal-header">
+            <div>
+              <div className="manager-action-modal-badge">Manager Action</div>
+              <h3>Send Tenant Invitation</h3>
+              <p className="manager-form-subtitle">
+                Save the tenant details and email an invitation so the tenant can set a password securely.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="manager-action-modal-close"
+              onClick={closeManagerActionPanel}
+            >
+              Close
+            </button>
+          </div>
+          <div className="manager-quick-pills">
+            <span className="manager-property-pill">{assignableUnits.length} assignable unit</span>
+            <span className="manager-property-pill">{occupiedUnits.length} occupied unit</span>
+          </div>
+          <label className="manager-field-group">
+            <span className="manager-form-label">Unit</span>
+            <select
+              className="manager-input manager-select-input"
+              value={tenantForm.unit_id}
+              onChange={(e) =>
+                setTenantForm((current) => ({
+                  ...current,
+                  unit_id: e.target.value,
+                }))
+              }
+            >
+              <option value="">Choose unit</option>
+              {assignableUnits.map((unit) => (
+                <option key={unit.id} value={unit.id}>
+                  Unit {unit.unit_number}{unit.floor ? ` | Floor ${unit.floor}` : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="manager-field-group">
+            <span className="manager-form-label">Tenant Name</span>
+            <input
+              className="manager-input"
+              placeholder="Enter tenant name"
+              value={tenantForm.name}
+              onChange={(e) =>
+                setTenantForm((current) => ({ ...current, name: e.target.value }))
+              }
+            />
+          </label>
+          <label className="manager-field-group">
+            <span className="manager-form-label">Tenant Email</span>
+            <input
+              className="manager-input"
+              placeholder="Enter tenant email"
+              type="email"
+              value={tenantForm.email}
+              onChange={(e) =>
+                setTenantForm((current) => ({ ...current, email: e.target.value }))
+              }
+            />
+          </label>
+          <label className="manager-field-group">
+            <span className="manager-form-label">Move In Date</span>
+            <input
+              className="manager-input manager-date-input"
+              type="date"
+              value={tenantForm.move_in_date}
+              onChange={(e) =>
+                setTenantForm((current) => ({
+                  ...current,
+                  move_in_date: e.target.value,
+                }))
+              }
+            />
+          </label>
+          <div className="manager-inline-fields">
+            <label className="manager-field-group">
+              <span className="manager-form-label">Lease Start</span>
+              <input
+                className="manager-input manager-date-input"
+                type="date"
+                value={tenantForm.lease_start}
+                onChange={(e) =>
+                  setTenantForm((current) => ({
+                    ...current,
+                    lease_start: e.target.value,
+                  }))
+                }
+              />
+            </label>
+            <label className="manager-field-group">
+              <span className="manager-form-label">Lease End</span>
+              <input
+                className="manager-input manager-date-input"
+                type="date"
+                value={tenantForm.lease_end}
+                onChange={(e) =>
+                  setTenantForm((current) => ({
+                    ...current,
+                    lease_end: e.target.value,
+                  }))
+                }
+              />
+            </label>
+          </div>
+          {leaseDatesInvalid ? (
+            <div className="manager-alert manager-section-alert error" style={{ marginBottom: 0 }}>
+              Lease end date cannot be earlier than lease start date.
+            </div>
+          ) : null}
+          <button className="action-btn" type="submit" disabled={!property || leaseDatesInvalid}>
+            Send Invitation
+          </button>
+          {renderInlineNotice("assign-tenant")}
+        </form>
+      );
+    }
+
+    if (activeManagerPanel === "create-unit") {
+      return (
+        <form
+          className="dashboard-panel dashboard-side-panel manager-form manager-action-panel manager-action-modal-card"
+          onSubmit={createUnit}
+        >
+          <div className="manager-action-modal-header">
+            <div>
+              <div className="manager-action-modal-badge">Manager Action</div>
+              <h3>Add Unit Details</h3>
+              <p className="manager-form-subtitle">
+                Add a new unit with rent and occupancy details for this property.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="manager-action-modal-close"
+              onClick={closeManagerActionPanel}
+            >
+              Close
+            </button>
+          </div>
+          <div className="manager-quick-pills">
+            <span className="manager-property-pill">{units.length} total unit</span>
+            <span className="manager-property-pill">{assignableUnits.length} ready to assign</span>
+          </div>
+          <input
+            className="manager-input"
+            placeholder="Unit number"
+            value={unitForm.unit_number}
+            onChange={(e) =>
+              setUnitForm((current) => ({
+                ...current,
+                unit_number: e.target.value,
+              }))
+            }
+          />
+          <input
+            className="manager-input"
+            placeholder="Floor"
+            value={unitForm.floor}
+            onChange={(e) =>
+              setUnitForm((current) => ({
+                ...current,
+                floor: e.target.value,
+              }))
+            }
+          />
+          <input
+            className="manager-input manager-number-input"
+            type="number"
+            min="0"
+            max="99999999.99"
+            step="0.01"
+            placeholder="Rent amount"
+            value={unitForm.rent_amount}
+            onChange={(e) =>
+              setUnitForm((current) => ({
+                ...current,
+                rent_amount: e.target.value,
+              }))
+            }
+          />
+          <select
+            className="manager-input manager-select-input"
+            value={unitForm.status}
+            onChange={(e) =>
+              setUnitForm((current) => ({
+                ...current,
+                status: e.target.value as "vacant" | "occupied",
+              }))
+            }
+          >
+            <option value="vacant">Vacant</option>
+            <option value="occupied">Occupied</option>
+          </select>
+          <button className="action-btn" type="submit" disabled={!property}>
+            Save Unit
+          </button>
+          {renderInlineNotice("create-unit")}
+        </form>
+      );
+    }
+
+    if (activeManagerPanel === "remove-tenant") {
+      return (
+        <div className="dashboard-panel dashboard-side-panel manager-form remove-tenant-form manager-action-panel manager-action-modal-card">
+          <div className="manager-action-modal-header">
+            <div>
+              <div className="manager-action-modal-badge">Manager Action</div>
+              <h3>Remove Tenant</h3>
+              <p className="manager-form-subtitle">
+                Choose an occupied unit to deactivate the tenant login without leaving this page.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="manager-action-modal-close"
+              onClick={closeManagerActionPanel}
+            >
+              Close
+            </button>
+          </div>
+          <div className="manager-quick-pills">
+            <span className="manager-property-pill">{occupiedUnits.length} occupied unit</span>
+          </div>
+          <select
+            className="manager-input manager-select-input"
+            value={removeTenantUnitId}
+            onChange={(e) => setRemoveTenantUnitId(e.target.value)}
+          >
+            <option value="">Choose occupied unit</option>
+            {occupiedUnits.map((unit) => {
+              const activeTenant = unit.tenants?.find((tenant) => tenant.unit_id !== null);
+
+              return (
+                <option key={unit.id} value={unit.id}>
+                  Unit {unit.unit_number} | {activeTenant?.user?.name ?? "Assigned tenant"}
+                </option>
+              );
+            })}
+          </select>
+          {selectedRemoveUnit ? (
+            <div className="manager-inline-hint">
+              Selected unit {selectedRemoveUnit.unit_number} will remove the current tenant login access.
+            </div>
+          ) : null}
+          <button
+            type="button"
+            className="remove-tenant-btn"
+            onClick={() => void removeTenant()}
+            disabled={!property}
+          >
+            Delete Tenant Login
+          </button>
+          {renderInlineNotice("remove-tenant")}
+        </div>
+      );
+    }
+
+    return null;
+  }
 
   if (!user) return null;
 
@@ -780,8 +1210,6 @@ Write the reply now:`;
   const noticeText = error || message;
   const noticeTone = error ? "error" : "success";
   const generalNotice = noticeContext === "general" ? noticeText : "";
-  const actionNotice = noticeContext === "actions" ? noticeText : "";
-  const communicationNotice = noticeContext === "communication" ? noticeText : "";
   const paymentNotice = noticeContext === "payment" ? noticeText : "";
   const paidPaymentsCount = paymentReport.filter((payment) => payment.status === "paid").length;
 
@@ -826,28 +1254,28 @@ Write the reply now:`;
             <div className="manager-overview-actions">
               <button
                 type="button"
-                className="manager-overview-action-btn"
+                className={`manager-overview-action-btn ${activeOverviewSection === "units" ? "active" : ""}`}
                 onClick={() => scrollToSection("units")}
               >
                 Unit Overview
               </button>
               <button
                 type="button"
-                className="manager-overview-action-btn"
+                className={`manager-overview-action-btn ${activeOverviewSection === "actions" ? "active" : ""}`}
                 onClick={() => scrollToSection("actions")}
               >
                 Manager Actions
               </button>
               <button
                 type="button"
-                className="manager-overview-action-btn"
+                className={`manager-overview-action-btn ${activeOverviewSection === "communication" ? "active" : ""}`}
                 onClick={() => scrollToSection("communication")}
               >
                 Tenant Communication
               </button>
               <button
                 type="button"
-                className="manager-overview-action-btn"
+                className={`manager-overview-action-btn ${activeOverviewSection === "payments" ? "active" : ""}`}
                 onClick={() => scrollToSection("payments")}
               >
                 Rent Payments
@@ -881,201 +1309,45 @@ Write the reply now:`;
           <div className="manager-actions-header">
             <div className="manager-actions-badge">Manager Actions</div>
             <h3>Tenant and Unit Actions</h3>
-            <p>Manage tenant assignment, add new units, and remove tenant access from one control area.</p>
+            <p>
+              {isManagerActionPage
+                ? "This action is open in a focused interface. Close it anytime to return to the dashboard."
+                : "Choose an action box to open a focused interface for that task."}
+            </p>
           </div>
 
-          {actionNotice && (
-            <>
-              <div className={`manager-alert manager-section-alert ${noticeTone}`}>
-                {actionNotice}
-              </div>
-              {invitePreviewUrl ? (
-                <div className="manager-alert manager-section-alert success">
-                  Invitation link for local testing: {invitePreviewUrl}
-                </div>
-              ) : null}
-            </>
-          )}
+          <div className="manager-action-switcher">
+            <button
+              type="button"
+              className={`manager-action-toggle ${activeManagerPanel === "assign-tenant" ? "active" : ""}`}
+              onClick={() => openManagerActionPanel("assign-tenant")}
+            >
+              <span className="manager-action-toggle-title">Send Tenant Invitation</span>
+              <span className="manager-action-toggle-meta">{assignableUnits.length} unit ready</span>
+            </button>
+            <button
+              type="button"
+              className={`manager-action-toggle ${activeManagerPanel === "create-unit" ? "active" : ""}`}
+              onClick={() => openManagerActionPanel("create-unit")}
+            >
+              <span className="manager-action-toggle-title">Add Unit Details</span>
+              <span className="manager-action-toggle-meta">{units.length} total unit</span>
+            </button>
+            <button
+              type="button"
+              className={`manager-action-toggle ${activeManagerPanel === "remove-tenant" ? "active" : ""}`}
+              onClick={() => openManagerActionPanel("remove-tenant")}
+            >
+              <span className="manager-action-toggle-title">Remove Tenant</span>
+              <span className="manager-action-toggle-meta">{occupiedUnits.length} occupied unit</span>
+            </button>
+          </div>
 
-          <div className="manager-actions-grid">
-            <form className="dashboard-panel dashboard-side-panel manager-form assign-tenant-form" onSubmit={assignTenant}>
-              <h3>Send Tenant Invitation</h3>
-              <p className="manager-form-subtitle">Save the tenant details and email an invitation so the tenant can set a password securely.</p>
-              <label className="manager-field-group">
-                <span className="manager-form-label">Unit</span>
-                <select
-                  className="manager-input manager-select-input"
-                  value={tenantForm.unit_id}
-                  onChange={(e) =>
-                    setTenantForm((current) => ({
-                      ...current,
-                      unit_id: e.target.value,
-                    }))
-                  }
-                >
-                  <option value="">Choose unit</option>
-                  {assignableUnits.map((unit) => (
-                      <option key={unit.id} value={unit.id}>
-                        {unit.unit_number}
-                      </option>
-                    ))}
-                </select>
-              </label>
-              <label className="manager-field-group">
-                <span className="manager-form-label">Tenant Name</span>
-                <input
-                  className="manager-input"
-                  placeholder="Enter tenant name"
-                  value={tenantForm.name}
-                  onChange={(e) =>
-                    setTenantForm((current) => ({ ...current, name: e.target.value }))
-                  }
-                />
-              </label>
-              <label className="manager-field-group">
-                <span className="manager-form-label">Tenant Email</span>
-                <input
-                  className="manager-input"
-                  placeholder="Enter tenant email"
-                  type="email"
-                  value={tenantForm.email}
-                  onChange={(e) =>
-                    setTenantForm((current) => ({ ...current, email: e.target.value }))
-                  }
-                />
-              </label>
-              <label className="manager-field-group">
-                <span className="manager-form-label">Move In Date</span>
-                <input
-                  className="manager-input manager-date-input"
-                  type="date"
-                  value={tenantForm.move_in_date}
-                  onChange={(e) =>
-                    setTenantForm((current) => ({
-                      ...current,
-                      move_in_date: e.target.value,
-                    }))
-                  }
-                />
-              </label>
-              <div className="manager-inline-fields">
-                <label className="manager-field-group">
-                  <span className="manager-form-label">Lease Start</span>
-                  <input
-                    className="manager-input manager-date-input"
-                    type="date"
-                    value={tenantForm.lease_start}
-                    onChange={(e) =>
-                      setTenantForm((current) => ({
-                        ...current,
-                        lease_start: e.target.value,
-                      }))
-                    }
-                  />
-                </label>
-                <label className="manager-field-group">
-                  <span className="manager-form-label">Lease End</span>
-                  <input
-                    className="manager-input manager-date-input"
-                    type="date"
-                    value={tenantForm.lease_end}
-                    onChange={(e) =>
-                      setTenantForm((current) => ({
-                        ...current,
-                        lease_end: e.target.value,
-                      }))
-                    }
-                  />
-                </label>
-              </div>
-              <button className="action-btn" type="submit" disabled={!property}>
-                Send Invitation
-              </button>
-            </form>
-
-            <div className="manager-actions-side">
-              <form className="dashboard-panel dashboard-side-panel manager-form" onSubmit={createUnit}>
-                <h3>Add Unit Details</h3>
-                <p className="manager-form-subtitle">Add a new unit with rent and occupancy details for this property.</p>
-                <input
-                  className="manager-input"
-                  placeholder="Unit number"
-                  value={unitForm.unit_number}
-                  onChange={(e) =>
-                    setUnitForm((current) => ({
-                      ...current,
-                      unit_number: e.target.value,
-                    }))
-                  }
-                />
-                <input
-                  className="manager-input"
-                  placeholder="Floor"
-                  value={unitForm.floor}
-                  onChange={(e) =>
-                    setUnitForm((current) => ({
-                      ...current,
-                      floor: e.target.value,
-                    }))
-                  }
-                />
-                <input
-                  className="manager-input manager-number-input"
-                  type="number"
-                  min="0"
-                  placeholder="Rent amount"
-                  value={unitForm.rent_amount}
-                  onChange={(e) =>
-                    setUnitForm((current) => ({
-                      ...current,
-                      rent_amount: e.target.value,
-                    }))
-                  }
-                />
-                <select
-                  className="manager-input manager-select-input"
-                  value={unitForm.status}
-                  onChange={(e) =>
-                    setUnitForm((current) => ({
-                      ...current,
-                      status: e.target.value as "vacant" | "occupied",
-                    }))
-                  }
-                >
-                  <option value="vacant">Vacant</option>
-                  <option value="occupied">Occupied</option>
-                </select>
-                <button className="action-btn" type="submit" disabled={!property}>
-                  Save Unit
-                </button>
-              </form>
-
-              <div className="dashboard-panel dashboard-side-panel manager-form remove-tenant-form">
-                <h3>Remove Tenant</h3>
-                <select
-                  className="manager-input manager-select-input"
-                  value={removeTenantUnitId}
-                  onChange={(e) => setRemoveTenantUnitId(e.target.value)}
-                >
-                  <option value="">Choose occupied unit</option>
-                  {units
-                    .filter((unit) => unit.status === "occupied")
-                    .map((unit) => (
-                      <option key={unit.id} value={unit.id}>
-                        {unit.unit_number}
-                      </option>
-                    ))}
-                </select>
-                <button
-                  className="remove-tenant-btn"
-                  onClick={() => void removeTenant()}
-                  disabled={!property}
-                >
-                  Delete Tenant Login
-                </button>
-              </div>
+          {activeManagerPanel === null ? (
+            <div className="dashboard-panel manager-collapsed-hint">
+              <p className="empty-text">Pick an action card above to open that tool in a popup interface.</p>
             </div>
-          </div>
+          ) : null}
         </section>
 
         <section className="tenant-communication-section" ref={tenantCommunicationRef}>
@@ -1084,12 +1356,6 @@ Write the reply now:`;
             <h3>Complaints and Announcements</h3>
             <p>Review tenant complaints on the left and publish tenant announcements on the right.</p>
           </div>
-
-          {communicationNotice && (
-            <div className={`manager-alert manager-section-alert ${noticeTone}`}>
-              {communicationNotice}
-            </div>
-          )}
 
           <div className="tenant-communication-stats">
             <div className="tenant-communication-stat-card">
@@ -1108,23 +1374,74 @@ Write the reply now:`;
               <div className="table-header-row">
                 <h3>Tenant Complaints</h3>
                 <span style={{ color: "#9cb8d0", fontSize: "13px", fontWeight: 600 }}>
-                  {complaints.length} complaint{complaints.length === 1 ? "" : "s"}
+                  {filteredComplaints.length} of {complaints.length} complaint{complaints.length === 1 ? "" : "s"}
                 </span>
+              </div>
+
+              <div className="manager-filter-bar">
+                <input
+                  type="text"
+                  className="table-search-input manager-filter-search"
+                  placeholder="Search complaint, tenant, unit..."
+                  value={complaintSearchTerm}
+                  onChange={(e) => setComplaintSearchTerm(e.target.value)}
+                />
+                <select
+                  className="manager-input manager-select-input manager-filter-select"
+                  value={complaintStatusFilter}
+                  onChange={(e) =>
+                    setComplaintStatusFilter(e.target.value as "all" | ComplaintItem["status"])
+                  }
+                >
+                  <option value="all">All status</option>
+                  <option value="open">Open</option>
+                  <option value="in_progress">In Progress</option>
+                  <option value="resolved">Resolved</option>
+                </select>
+                <select
+                  className="manager-input manager-select-input manager-filter-select"
+                  value={complaintPriorityFilter}
+                  onChange={(e) =>
+                    setComplaintPriorityFilter(e.target.value as "all" | "high" | "medium" | "low")
+                  }
+                >
+                  <option value="all">All priority</option>
+                  <option value="high">High</option>
+                  <option value="medium">Medium</option>
+                  <option value="low">Low</option>
+                </select>
+                {complaintFiltersActive ? (
+                  <button
+                    type="button"
+                    className="table-action-btn manager-clear-btn"
+                    onClick={() => {
+                      setComplaintSearchTerm("");
+                      setComplaintStatusFilter("all");
+                      setComplaintPriorityFilter("all");
+                    }}
+                  >
+                    Clear
+                  </button>
+                ) : null}
               </div>
 
               {loading ? (
                 <p className="empty-text">Loading complaints...</p>
-              ) : complaints.length === 0 ? (
-                <p className="empty-text">No complaints submitted in this property.</p>
+              ) : filteredComplaints.length === 0 ? (
+                <p className="empty-text">
+                  {complaintFiltersActive
+                    ? "No complaints match the current filters."
+                    : "No complaints submitted in this property."}
+                </p>
               ) : (
                 <div className="complaints-list">
-                  {complaints.map((complaint) => (
+                  {filteredComplaints.map((complaint) => (
                     <div key={complaint.id} className="complaint-item">
                       <div className="complaint-top">
                         <div className="complaint-copy">
                           <h4>{complaint.title}</h4>
                           <p>
-                            Unit {complaint.unit?.unit_number ?? "-"} • {complaint.tenant?.user?.name ?? "Tenant"}
+                            Unit {complaint.unit?.unit_number ?? "-"} | {complaint.tenant?.user?.name ?? "Tenant"}
                           </p>
                         </div>
                         <div className="complaint-meta-column">
@@ -1136,7 +1453,7 @@ Write the reply now:`;
 
                       <p>{complaint.description}</p>
                       <p>
-                        Category: {complaint.category || "General"} • Submitted {formatRelative(complaint.created_at)}
+                        Category: {complaint.category || "General"} | Submitted {formatRelative(complaint.created_at)}
                       </p>
 
                       <div className="complaint-footer">
@@ -1155,6 +1472,7 @@ Write the reply now:`;
                           </select>
                         </div>
                       </div>
+                      {renderInlineNotice(`complaint-status-${complaint.id}`)}
 
                       <div
                         style={{
@@ -1205,6 +1523,7 @@ Write the reply now:`;
                             >
                               {sendingReplyId === complaint.id ? "Sending Reply..." : "Send Reply To Tenant"}
                             </button>
+                            {renderInlineNotice(`complaint-tools-${complaint.id}`)}
                           </div>
                         ) : null}
                       </div>
@@ -1266,7 +1585,40 @@ Write the reply now:`;
               <button className="action-btn" type="submit" disabled={!property}>
                 Publish Notice
               </button>
+              {renderInlineNotice("publish-announcement")}
             </form>
+
+            <div className="dashboard-panel dashboard-side-panel manager-preview-panel">
+              <div className="table-header-row">
+                <h3>Recent Announcements</h3>
+                <span style={{ color: "#9cb8d0", fontSize: "13px", fontWeight: 600 }}>
+                  {recentAnnouncements.length} recent
+                </span>
+              </div>
+
+              {recentAnnouncements.length === 0 ? (
+                <p className="empty-text">No announcements published yet.</p>
+              ) : (
+                <div className="manager-preview-list">
+                  {recentAnnouncements.map((announcement) => (
+                    <article key={announcement.id} className="manager-preview-card">
+                      <div className="manager-preview-top">
+                        <div>
+                          <h4>{announcement.title ?? "Untitled announcement"}</h4>
+                          <p className="manager-preview-meta">
+                            Audience: {titleCase(announcement.target_role ?? "tenant")}
+                          </p>
+                        </div>
+                        <span className="manager-preview-date">
+                          {formatDate(announcement.created_at)}
+                        </span>
+                      </div>
+                      <p>{announcement.message ?? "No announcement message."}</p>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
         </section>
@@ -1288,25 +1640,63 @@ Write the reply now:`;
             <div className="table-header-row">
               <h3>Saved Payment Report</h3>
               <span style={{ color: "#9cb8d0", fontSize: "13px", fontWeight: 600 }}>
-                {paidPaymentsCount} paid, {paymentReport.length} total
+                {paidPaymentsCount} paid, {filteredPaymentReport.length} visible
               </span>
+            </div>
+
+            <div className="manager-filter-bar">
+              <input
+                type="text"
+                className="table-search-input manager-filter-search"
+                placeholder="Search tenant, unit, month..."
+                value={paymentSearchTerm}
+                onChange={(e) => setPaymentSearchTerm(e.target.value)}
+              />
+              <select
+                className="manager-input manager-select-input manager-filter-select"
+                value={paymentStatusFilter}
+                onChange={(e) =>
+                  setPaymentStatusFilter(e.target.value as "all" | PaymentReportItem["status"])
+                }
+              >
+                <option value="all">All status</option>
+                <option value="paid">Paid</option>
+                <option value="pending">Pending</option>
+                <option value="unpaid">Unpaid</option>
+              </select>
+              {paymentFiltersActive ? (
+                <button
+                  type="button"
+                  className="table-action-btn manager-clear-btn"
+                  onClick={() => {
+                    setPaymentSearchTerm("");
+                    setPaymentStatusFilter("all");
+                  }}
+                >
+                  Clear
+                </button>
+              ) : null}
             </div>
 
             {!property ? (
               <p className="empty-text">Assign a property first to see rent payment reports.</p>
             ) : loading ? (
               <p className="empty-text">Loading payment reports...</p>
-            ) : paymentReport.length === 0 ? (
-              <p className="empty-text">No rent payment records have been saved for this property yet.</p>
+            ) : filteredPaymentReport.length === 0 ? (
+              <p className="empty-text">
+                {paymentFiltersActive
+                  ? "No payment record matches the current filters."
+                  : "No rent payment records have been saved for this property yet."}
+              </p>
             ) : (
               <div className="payment-report-list">
-                {paymentReport.map((payment) => (
+                {filteredPaymentReport.map((payment) => (
                   <article key={payment.id} className="payment-report-card">
                     <div className="payment-report-top">
                       <div className="payment-report-copy">
                         <h4>{payment.tenant?.user?.name ?? "Tenant payment"}</h4>
                         <p className="payment-report-subtitle">
-                          {payment.unit?.apartment?.name ?? property?.name ?? "Assigned property"} • Unit{" "}
+                          {payment.unit?.apartment?.name ?? property?.name ?? "Assigned property"} | Unit{" "}
                           {payment.unit?.unit_number ?? "-"}
                         </p>
                       </div>
@@ -1361,6 +1751,21 @@ Write the reply now:`;
           </div>
         </section>
       </div>
+
+      {activeManagerPanel ? (
+        <div
+          className="manager-modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              closeManagerActionPanel();
+            }
+          }}
+        >
+          <div className="manager-modal-shell" onMouseDown={(event) => event.stopPropagation()}>
+            {renderManagerActionPanel()}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

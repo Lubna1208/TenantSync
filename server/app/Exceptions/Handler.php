@@ -2,7 +2,16 @@
 
 namespace App\Exceptions;
 
+use Illuminate\Auth\Access\AuthorizationException;
+use Illuminate\Auth\AuthenticationException;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
+use Illuminate\Http\Exceptions\HttpResponseException;
+use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
+use Symfony\Component\HttpKernel\Exception\MethodNotAllowedHttpException;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Throwable;
 
 class Handler extends ExceptionHandler
@@ -48,12 +57,27 @@ class Handler extends ExceptionHandler
      */
     public function render($request, Throwable $exception)
     {
-        $message = $this->getMessage($exception);
+        if (! $request->expectsJson() && ! $request->is('api/*')) {
+            return parent::render($request, $exception);
+        }
 
-        return response()->json([
+        if ($exception instanceof HttpResponseException) {
+            return $exception->getResponse();
+        }
+
+        $message = $this->getMessage($exception);
+        $status = $this->getStatusCode($exception);
+
+        $payload = [
             'success' => false,
             'message' => $message,
-        ], 200);
+        ];
+
+        if ($exception instanceof ValidationException) {
+            $payload['errors'] = $exception->errors();
+        }
+
+        return response()->json($payload, $status);
     }
 
 
@@ -67,14 +91,68 @@ class Handler extends ExceptionHandler
     protected function getMessage(Throwable $exception): string
     {
         if ($exception instanceof ValidationException) {
-            return 'Validation failed.';
+            return 'Validation failed';
+        }
+
+        if ($exception instanceof AuthenticationException) {
+            return 'Unauthenticated.';
+        }
+
+        if ($exception instanceof AuthorizationException) {
+            return 'You are not allowed to perform this action.';
         }
 
         if ($exception instanceof ModelNotFoundException) {
             return 'Resource not found.';
         }
 
-        return $exception->getMessage() ?: 'An unexpected error occurred.';
+        if ($exception instanceof NotFoundHttpException) {
+            return 'Endpoint not found.';
+        }
+
+        if ($exception instanceof MethodNotAllowedHttpException) {
+            return 'This action is not allowed for this endpoint.';
+        }
+
+        if ($exception instanceof QueryException) {
+            $queryMessage = strtolower($exception->getMessage());
+
+            if (strpos($queryMessage, 'out of range') !== false || strpos($queryMessage, '22003') !== false) {
+                return 'One of the amounts is too large. Please enter a smaller value.';
+            }
+
+            return 'The request could not be completed with the provided data.';
+        }
+
+        return 'An unexpected server error occurred. Please try again.';
     }
 
+    protected function getStatusCode(Throwable $exception): int
+    {
+        if ($exception instanceof ValidationException) {
+            return 422;
+        }
+
+        if ($exception instanceof AuthenticationException) {
+            return 401;
+        }
+
+        if ($exception instanceof AuthorizationException) {
+            return 403;
+        }
+
+        if ($exception instanceof ModelNotFoundException) {
+            return 404;
+        }
+
+        if ($exception instanceof QueryException) {
+            return 422;
+        }
+
+        if ($exception instanceof HttpExceptionInterface) {
+            return $exception->getStatusCode();
+        }
+
+        return 500;
+    }
 }

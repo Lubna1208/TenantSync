@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
+import { getApiMessage } from "../helpers/apiMessages";
 import "./Landing.css";
 import logo from "../assets/logo.png";
-import { apiUrl, authFetch } from "../helpers/authApi";
+import { api } from "../api";
 
 type User = {
   id: number;
@@ -92,17 +93,12 @@ export default function Landing() {
     setIsSubmitting(true);
 
     try {
-      const res = await fetch(apiUrl("/auth/login"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ email, password }),
-      });
+      const res = await api.auth.login({ email, password });
 
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
-        setMsg(data?.message ?? `Login failed (HTTP ${res.status})`);
+        setMsg(getApiMessage(data, `Login failed (HTTP ${res.status})`));
         return;
       }
 
@@ -113,10 +109,7 @@ export default function Landing() {
           : null;
 
       if (!user) {
-        const meRes = await authFetch("/auth/me", {
-          method: "GET",
-          cache: "no-store",
-        });
+        const meRes = await api.auth.me();
 
         if (meRes.ok) {
           const meData = await meRes.json().catch(() => null);

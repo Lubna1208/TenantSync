@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\RentPayment;
+use App\Support\ValidationRules;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
 
@@ -23,11 +24,11 @@ class RentPaymentController extends Controller
         $validator = Validator::make($request->all(), [
             'tenant_id' => 'required|exists:tenants,id',
             'unit_id' => 'required|exists:units,id',
-            'amount' => 'required|numeric|min:0',
+            'amount' => ValidationRules::money(),
             'payment_month' => 'required|string',
             'status' => 'nullable|in:paid,unpaid,pending',
             'payment_date' => 'nullable|date'
-        ]);
+        ], ValidationRules::moneyMessages('amount', 'Payment amount'));
 
         if ($validator->fails()) {
             return response()->json([
@@ -78,6 +79,22 @@ class RentPaymentController extends Controller
             return response()->json([
                 'message' => 'Payment not found'
             ], 404);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'tenant_id' => 'sometimes|required|exists:tenants,id',
+            'unit_id' => 'sometimes|required|exists:units,id',
+            'amount' => ValidationRules::money('sometimes|required'),
+            'payment_month' => 'sometimes|required|string',
+            'status' => 'nullable|in:paid,unpaid,pending',
+            'payment_date' => 'nullable|date',
+        ], ValidationRules::moneyMessages('amount', 'Payment amount'));
+
+        if ($validator->fails()) {
+            return response()->json([
+                'message' => 'Validation failed',
+                'errors' => $validator->errors()
+            ], 422);
         }
 
         $payment->update($request->only([
