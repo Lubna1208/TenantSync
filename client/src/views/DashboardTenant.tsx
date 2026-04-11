@@ -2,8 +2,6 @@ import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from 
 import { useNavigate } from "react-router-dom";
 import { authFetch, clearStoredAuth, getStoredToken } from "../helpers/authApi";
 
-const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
-const GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"] as const;
 const CHAT_SYSTEM_PROMPT = `You are a helpful tenant support assistant for a property management platform called TenantSync.
 You only answer questions related to renting, property management, and tenant life.
 Keep answers concise, friendly, and professional.
@@ -104,33 +102,20 @@ type GeminiContent = {
 };
 
 async function generateGeminiText(contents: GeminiContent[]) {
-  let lastErrorMessage = "Gemini API request failed.";
+  const res = await authFetch("/ai/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ contents }),
+  });
 
-  for (const model of GEMINI_MODELS) {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contents }),
-      }
-    );
+  const data = await res.json().catch(() => null);
+  const reply = data?.reply;
 
-    const data = await res.json().catch(() => null);
-    const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-
-    if (res.ok && reply) {
-      return reply;
-    }
-
-    lastErrorMessage = data?.error?.message ?? lastErrorMessage;
-
-    if (res.status !== 503) {
-      break;
-    }
+  if (res.ok && typeof reply === "string" && reply.trim()) {
+    return reply;
   }
 
-  throw new Error(lastErrorMessage);
+  throw new Error(data?.message ?? "AI request failed.");
 }
 
 function safeParseUser(raw: string | null): User | null {
@@ -510,10 +495,6 @@ export default function DashboardTenant() {
     setChatLoading(true);
 
     try {
-      if (!GEMINI_API_KEY) {
-        throw new Error("Gemini API key is missing.");
-      }
-
       const contents: GeminiContent[] = [
         { role: "user", parts: [{ text: CHAT_SYSTEM_PROMPT }] },
         ...nextMessages.map((message) => ({
@@ -525,10 +506,7 @@ export default function DashboardTenant() {
       const reply = await generateGeminiText(contents);
       setChatMessages((current) => [...current, { role: "model", text: reply }]);
     } catch (err) {
-      const fallback =
-        err instanceof Error && err.message === "Gemini API key is missing."
-          ? "Gemini support is not configured yet. Add VITE_GEMINI_API_KEY in client/.env."
-          : "Sorry, the AI assistant is unavailable right now. Please try again.";
+      const fallback = err instanceof Error ? err.message : "Sorry, the AI assistant is unavailable right now. Please try again.";
 
       setChatMessages((current) => [...current, { role: "model", text: fallback }]);
     } finally {

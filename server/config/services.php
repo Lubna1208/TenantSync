@@ -38,4 +38,10 @@ return [
         'frontend_url' => env('FRONTEND_URL', 'http://localhost:5173'),
     ],
 
+    'gemini' => [
+        'api_key' => env('GEMINI_API_KEY'),
+        'base_url' => env('GEMINI_BASE_URL', 'https://generativelanguage.googleapis.com/v1beta'),
+        'models' => array_filter(array_map('trim', explode(',', (string) env('GEMINI_MODELS', 'gemini-2.5-flash,gemini-2.5-flash-lite')))),
+    ],
+
 ];

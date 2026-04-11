@@ -12,6 +12,7 @@ use App\Http\Controllers\OwnerController;
 use App\Http\Controllers\ManagerController;
 use App\Http\Controllers\StripePaymentController;
 use App\Http\Controllers\TenantInvitationController;
+use App\Http\Controllers\AiController;
 
 Route::post('/auth/register', [AuthController::class, 'register']);
 Route::post('/auth/login', [AuthController::class, 'login']);
@@ -24,6 +25,7 @@ Route::post('/tenant-invitations/{token}/accept', [TenantInvitationController::c
 Route::middleware(['jwt.cookie', 'auth.api.user'])->group(function () {
     Route::get('/auth/me', [AuthController::class, 'me']);
     Route::post('/auth/change-password', [AuthController::class, 'changePassword']);
+    Route::post('/ai/generate', [AiController::class, 'generate']);
 
     Route::middleware('role:admin')->prefix('owner')->group(function () {
         Route::get('/managers', [OwnerController::class, 'managers']);
