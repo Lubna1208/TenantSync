@@ -114,13 +114,6 @@ type AnnouncementItem = {
 
 type NoticeContext = "general" | "actions" | "communication" | "payment";
 
-type AssignTenantResponse = {
-  message?: string;
-  invitation?: {
-    invitation_url?: string | null;
-  } | null;
-};
-
 function safeParseUser(raw: string | null): User | null {
   if (!raw) return null;
   if (raw === "undefined" || raw === "null") return null;
@@ -261,22 +254,6 @@ export default function DashboardManager() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [noticeContext, setNoticeContext] = useState<NoticeContext>("general");
-  const [invitePreviewUrl, setInvitePreviewUrl] = useState("");
-  const [unitForm, setUnitForm] = useState({
-    unit_number: "",
-    floor: "",
-    rent_amount: "",
-    status: "vacant",
-  });
-  const [tenantForm, setTenantForm] = useState({
-    unit_id: "",
-    name: "",
-    email: "",
-    date_of_birth: "",
-    move_in_date: "",
-    lease_start: "",
-    lease_end: "",
-  });
   const [removeTenantUnitId, setRemoveTenantUnitId] = useState("");
   const [announcementForm, setAnnouncementForm] = useState({
     title: "",
@@ -381,7 +358,6 @@ export default function DashboardManager() {
     setMessage("");
     setError("");
     setNoticeContext("general");
-    setInvitePreviewUrl("");
   }
 
   function setSuccess(text: string, context: NoticeContext = "general") {
@@ -408,91 +384,6 @@ export default function DashboardManager() {
       behavior: "smooth",
       block: "start",
     });
-  }
-
-  async function createUnit(e: FormEvent) {
-    e.preventDefault();
-    clearNotice();
-
-    try {
-      const res = await authFetch("/manager/units", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...unitForm,
-          rent_amount: Number(unitForm.rent_amount),
-        }),
-      });
-
-      const data = await res.json().catch(() => null);
-
-      if (!res.ok) {
-        setFailure(getFailureMessage(data, "Unit creation failed."), "actions");
-        return;
-      }
-
-      setUnitForm({
-        unit_number: "",
-        floor: "",
-        rent_amount: "",
-        status: "vacant",
-      });
-      setSuccess(data?.message ?? "Unit created successfully.", "actions");
-      await loadDashboard();
-    } catch {
-      setFailure("Network error while creating unit.", "actions");
-    }
-  }
-
-  async function assignTenant(e: FormEvent) {
-    e.preventDefault();
-    clearNotice();
-
-    if (!tenantForm.unit_id) {
-      setFailure("Please choose a unit first.", "actions");
-      return;
-    }
-
-    try {
-      const res = await authFetch(
-        `/manager/units/${tenantForm.unit_id}/assign-tenant`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ...tenantForm,
-            date_of_birth: tenantForm.date_of_birth || null,
-            move_in_date: tenantForm.move_in_date || null,
-            lease_start: tenantForm.lease_start || null,
-            lease_end: tenantForm.lease_end || null,
-          }),
-        }
-      );
-
-      const data = await res.json().catch(() => null);
-
-      if (!res.ok) {
-        setFailure(getFailureMessage(data, "Tenant assignment failed."), "actions");
-        return;
-      }
-
-      setTenantForm({
-        unit_id: "",
-        name: "",
-        email: "",
-        date_of_birth: "",
-        move_in_date: "",
-        lease_start: "",
-        lease_end: "",
-      });
-      setInvitePreviewUrl(
-        ((data as AssignTenantResponse | null)?.invitation?.invitation_url ?? "").trim()
-      );
-      setSuccess(data?.message ?? "Tenant invitation sent successfully.", "actions");
-      await loadDashboard();
-    } catch {
-      setFailure("Network error while assigning tenant.", "actions");
-    }
   }
 
   async function removeTenant() {
@@ -668,14 +559,6 @@ Write the reply now:`;
 
   const property = dashboard?.property ?? null;
   const units = property?.units ?? [];
-  const assignableUnits = units.filter((unit) => {
-    if (unit.status === "vacant") {
-      return true;
-    }
-
-    const activeTenant = unit.tenants?.find((tenant) => tenant.unit_id !== null);
-    return activeTenant?.user?.status === "inactive";
-  });
   const paymentReport = dashboard?.payments ?? [];
 
   if (!user) return null;
@@ -859,6 +742,22 @@ Write the reply now:`;
             <div className="manager-actions-badge">Manager Actions</div>
             <h3>Tenant and Unit Actions</h3>
             <p>Manage tenant assignment, add new units, and remove tenant access from one control area.</p>
+            <div className="manager-actions-shortcuts">
+              <button
+                type="button"
+                className="manager-overview-action-btn"
+                onClick={() => navigate("/dashboard-manager/invite")}
+              >
+                Send Tenant Invitation
+              </button>
+              <button
+                type="button"
+                className="manager-overview-action-btn"
+                onClick={() => navigate("/dashboard-manager/units/new")}
+              >
+                Add Unit Details
+              </button>
+            </div>
           </div>
 
           {actionNotice && (
@@ -866,191 +765,36 @@ Write the reply now:`;
               <div className={`manager-alert manager-section-alert ${noticeTone}`}>
                 {actionNotice}
               </div>
-              {invitePreviewUrl ? (
-                <div className="manager-alert manager-section-alert success">
-                  Invitation link for local testing: {invitePreviewUrl}
-                </div>
-              ) : null}
             </>
           )}
 
-          <div className="manager-actions-grid">
-            <form className="dashboard-panel dashboard-side-panel manager-form assign-tenant-form" onSubmit={assignTenant}>
-              <h3>Send Tenant Invitation</h3>
-              <p className="manager-form-subtitle">Save the tenant details and email an invitation so the tenant can set a password securely.</p>
-              <label className="manager-field-group">
-                <span className="manager-form-label">Unit</span>
-                <select
-                  className="manager-input manager-select-input"
-                  value={tenantForm.unit_id}
-                  onChange={(e) =>
-                    setTenantForm((current) => ({
-                      ...current,
-                      unit_id: e.target.value,
-                    }))
-                  }
-                >
-                  <option value="">Choose unit</option>
-                  {assignableUnits.map((unit) => (
-                      <option key={unit.id} value={unit.id}>
-                        {unit.unit_number}
-                      </option>
-                    ))}
-                </select>
-              </label>
-              <label className="manager-field-group">
-                <span className="manager-form-label">Tenant Name</span>
-                <input
-                  className="manager-input"
-                  placeholder="Enter tenant name"
-                  value={tenantForm.name}
-                  onChange={(e) =>
-                    setTenantForm((current) => ({ ...current, name: e.target.value }))
-                  }
-                />
-              </label>
-              <label className="manager-field-group">
-                <span className="manager-form-label">Tenant Email</span>
-                <input
-                  className="manager-input"
-                  placeholder="Enter tenant email"
-                  type="email"
-                  value={tenantForm.email}
-                  onChange={(e) =>
-                    setTenantForm((current) => ({ ...current, email: e.target.value }))
-                  }
-                />
-              </label>
-              <label className="manager-field-group">
-                <span className="manager-form-label">Move In Date</span>
-                <input
-                  className="manager-input manager-date-input"
-                  type="date"
-                  value={tenantForm.move_in_date}
-                  onChange={(e) =>
-                    setTenantForm((current) => ({
-                      ...current,
-                      move_in_date: e.target.value,
-                    }))
-                  }
-                />
-              </label>
-              <div className="manager-inline-fields">
-                <label className="manager-field-group">
-                  <span className="manager-form-label">Lease Start</span>
-                  <input
-                    className="manager-input manager-date-input"
-                    type="date"
-                    value={tenantForm.lease_start}
-                    onChange={(e) =>
-                      setTenantForm((current) => ({
-                        ...current,
-                        lease_start: e.target.value,
-                      }))
-                    }
-                  />
-                </label>
-                <label className="manager-field-group">
-                  <span className="manager-form-label">Lease End</span>
-                  <input
-                    className="manager-input manager-date-input"
-                    type="date"
-                    value={tenantForm.lease_end}
-                    onChange={(e) =>
-                      setTenantForm((current) => ({
-                        ...current,
-                        lease_end: e.target.value,
-                      }))
-                    }
-                  />
-                </label>
-              </div>
-              <button className="action-btn" type="submit" disabled={!property}>
-                Send Invitation
+          <div className="manager-actions-grid manager-actions-grid-single">
+            <div className="dashboard-panel dashboard-side-panel manager-form remove-tenant-form">
+              <h3>Remove Tenant</h3>
+              <p className="manager-form-subtitle">
+                Use the buttons above for invitation and unit creation. Remove a tenant login from here.
+              </p>
+              <select
+                className="manager-input manager-select-input"
+                value={removeTenantUnitId}
+                onChange={(e) => setRemoveTenantUnitId(e.target.value)}
+              >
+                <option value="">Choose occupied unit</option>
+                {units
+                  .filter((unit) => unit.status === "occupied")
+                  .map((unit) => (
+                    <option key={unit.id} value={unit.id}>
+                      {unit.unit_number}
+                    </option>
+                  ))}
+              </select>
+              <button
+                className="remove-tenant-btn"
+                onClick={() => void removeTenant()}
+                disabled={!property}
+              >
+                Delete Tenant Login
               </button>
-            </form>
-
-            <div className="manager-actions-side">
-              <form className="dashboard-panel dashboard-side-panel manager-form" onSubmit={createUnit}>
-                <h3>Add Unit Details</h3>
-                <p className="manager-form-subtitle">Add a new unit with rent and occupancy details for this property.</p>
-                <input
-                  className="manager-input"
-                  placeholder="Unit number"
-                  value={unitForm.unit_number}
-                  onChange={(e) =>
-                    setUnitForm((current) => ({
-                      ...current,
-                      unit_number: e.target.value,
-                    }))
-                  }
-                />
-                <input
-                  className="manager-input"
-                  placeholder="Floor"
-                  value={unitForm.floor}
-                  onChange={(e) =>
-                    setUnitForm((current) => ({
-                      ...current,
-                      floor: e.target.value,
-                    }))
-                  }
-                />
-                <input
-                  className="manager-input manager-number-input"
-                  type="number"
-                  min="0"
-                  placeholder="Rent amount"
-                  value={unitForm.rent_amount}
-                  onChange={(e) =>
-                    setUnitForm((current) => ({
-                      ...current,
-                      rent_amount: e.target.value,
-                    }))
-                  }
-                />
-                <select
-                  className="manager-input manager-select-input"
-                  value={unitForm.status}
-                  onChange={(e) =>
-                    setUnitForm((current) => ({
-                      ...current,
-                      status: e.target.value as "vacant" | "occupied",
-                    }))
-                  }
-                >
-                  <option value="vacant">Vacant</option>
-                  <option value="occupied">Occupied</option>
-                </select>
-                <button className="action-btn" type="submit" disabled={!property}>
-                  Save Unit
-                </button>
-              </form>
-
-              <div className="dashboard-panel dashboard-side-panel manager-form remove-tenant-form">
-                <h3>Remove Tenant</h3>
-                <select
-                  className="manager-input manager-select-input"
-                  value={removeTenantUnitId}
-                  onChange={(e) => setRemoveTenantUnitId(e.target.value)}
-                >
-                  <option value="">Choose occupied unit</option>
-                  {units
-                    .filter((unit) => unit.status === "occupied")
-                    .map((unit) => (
-                      <option key={unit.id} value={unit.id}>
-                        {unit.unit_number}
-                      </option>
-                    ))}
-                </select>
-                <button
-                  className="remove-tenant-btn"
-                  onClick={() => void removeTenant()}
-                  disabled={!property}
-                >
-                  Delete Tenant Login
-                </button>
-              </div>
             </div>
           </div>
         </section>

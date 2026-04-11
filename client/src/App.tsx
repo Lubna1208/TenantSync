@@ -5,6 +5,10 @@ import Dashboard from "./views/Dashboard";
 import DashboardManager from "./views/DashboardManager";
 import DashboardTenant from "./views/DashboardTenant";
 import AcceptTenantInvitation from "./views/AcceptTenantInvitation";
+import ManagerSendInvitation from "./views/ManagerSendInvitation";
+import ManagerAddUnitDetails from "./views/ManagerAddUnitDetails";
+import OwnerCreateProperty from "./views/OwnerCreateProperty";
+import OwnerCreateManager from "./views/OwnerCreateManager";
 import { authFetch, clearStoredAuth } from "./helpers/authApi";
 
 type User = {
@@ -147,6 +151,24 @@ export default function App() {
         />
 
         <Route
+          path="/dashboard/properties/new"
+          element={
+            <ProtectedRoute allowedRoles={["admin"]} authChecked={authChecked}>
+              <OwnerCreateProperty />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/dashboard/managers/new"
+          element={
+            <ProtectedRoute allowedRoles={["admin"]} authChecked={authChecked}>
+              <OwnerCreateManager />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
           path="/dashboard-manager"
           element={
             <ProtectedRoute
@@ -154,6 +176,30 @@ export default function App() {
               authChecked={authChecked}
             >
               <DashboardManager />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/dashboard-manager/invite"
+          element={
+            <ProtectedRoute
+              allowedRoles={["manager"]}
+              authChecked={authChecked}
+            >
+              <ManagerSendInvitation />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/dashboard-manager/units/new"
+          element={
+            <ProtectedRoute
+              allowedRoles={["manager"]}
+              authChecked={authChecked}
+            >
+              <ManagerAddUnitDetails />
             </ProtectedRoute>
           }
         />
