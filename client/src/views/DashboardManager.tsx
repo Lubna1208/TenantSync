@@ -8,9 +8,6 @@ import { authFetch, clearStoredAuth } from "../helpers/authApi";
 
 import "../styles/managerDashboard.css";
 
-const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
-const GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"] as const;
-
 type User = {
   id: number;
   name: string;
@@ -227,35 +224,22 @@ function getFailureMessage(
 }
 
 async function generateGeminiText(prompt: string) {
-  let lastErrorMessage = "Gemini API request failed.";
+  const res = await authFetch("/ai/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      prompt,
+    }),
+  });
 
-  for (const model of GEMINI_MODELS) {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-        }),
-      }
-    );
+  const data = await res.json().catch(() => null);
+  const reply = data?.reply;
 
-    const data = await res.json().catch(() => null);
-    const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-
-    if (res.ok && reply) {
-      return reply;
-    }
-
-    lastErrorMessage = data?.error?.message ?? lastErrorMessage;
-
-    if (res.status !== 503) {
-      break;
-    }
+  if (res.ok && typeof reply === "string" && reply.trim()) {
+    return reply;
   }
 
-  throw new Error(lastErrorMessage);
+  throw new Error(data?.message ?? "AI request failed.");
 }
 
 export default function DashboardManager() {
@@ -619,17 +603,10 @@ Current Status: ${complaint.status}
 Write the reply now:`;
 
     try {
-      if (!GEMINI_API_KEY) {
-        throw new Error("Gemini API key is missing.");
-      }
-
       const reply = await generateGeminiText(prompt);
       setReplyMap((prev) => ({ ...prev, [complaint.id]: reply }));
     } catch (err) {
-      const fallback =
-        err instanceof Error && err.message === "Gemini API key is missing."
-          ? "Gemini API key is missing. Add VITE_GEMINI_API_KEY in client/.env."
-          : "Error generating reply. Please try again.";
+      const fallback = err instanceof Error ? err.message : "Error generating reply. Please try again.";
 
       setReplyMap((prev) => ({ ...prev, [complaint.id]: fallback }));
     } finally {
