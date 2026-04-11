@@ -24,7 +24,9 @@ class ApartmentController extends Controller
             'owner_id' => 'required|exists:users,id',
             'name' => 'required|string|max:255',
             'address' => 'required|string|max:255',
-            'total_units' => 'required|integer|min:1'
+            'total_units' => 'required|integer|min:1|max:4294967295'
+        ], [
+            'total_units.max' => 'Total units is too large. Please enter a smaller value.',
         ]);
 
         if ($validator->fails()) {

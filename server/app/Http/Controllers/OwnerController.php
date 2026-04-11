@@ -119,7 +119,7 @@ class OwnerController extends Controller
         $validator = Validator::make($request->all(), [
             'name' => 'required|string|max:255',
             'address' => 'required|string|max:255',
-            'total_units' => 'required|integer|min:1',
+            'total_units' => 'required|integer|min:1|max:4294967295',
             'manager_id' => [
                 'nullable',
                 'integer',
@@ -128,6 +128,8 @@ class OwnerController extends Controller
                         ->where('created_by', $owner->id);
                 }),
             ],
+        ], [
+            'total_units.max' => 'Total units is too large. Please enter a smaller value.',
         ]);
 
         if ($validator->fails()) {
