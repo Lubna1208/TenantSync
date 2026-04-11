@@ -11,35 +11,26 @@ abstract class TestCase extends BaseTestCase
 {
     use CreatesApplication;
 
-    protected static bool $testingDatabasePrepared = false;
-
     protected function setUp(): void
     {
         parent::setUp();
 
-        $this->useSqliteTestingDatabase();
+        $this->useMySqlTestingDatabase();
         $this->ensureTestingSchema();
         $this->resetTestingData();
     }
 
-    protected function useSqliteTestingDatabase(): void
+    protected function useMySqlTestingDatabase(): void
     {
-        $databasePath = database_path('testing-' . getmypid() . '.sqlite');
+        config()->set('database.default', 'mysql');
+        config()->set('database.connections.mysql.host', env('DB_HOST', '127.0.0.1'));
+        config()->set('database.connections.mysql.port', env('DB_PORT', '3306'));
+        config()->set('database.connections.mysql.database', env('DB_TEST_DATABASE', env('DB_DATABASE', 'tenantsync')));
+        config()->set('database.connections.mysql.username', env('DB_USERNAME', 'root'));
+        config()->set('database.connections.mysql.password', env('DB_PASSWORD', ''));
 
-        if (! self::$testingDatabasePrepared) {
-            if (! file_exists($databasePath)) {
-                touch($databasePath);
-            }
-
-            self::$testingDatabasePrepared = true;
-        }
-
-        config()->set('database.default', 'sqlite');
-        config()->set('database.connections.sqlite.database', $databasePath);
-        config()->set('database.connections.sqlite.foreign_key_constraints', true);
-
-        DB::purge('sqlite');
-        DB::reconnect('sqlite');
+        DB::purge('mysql');
+        DB::reconnect('mysql');
     }
 
     protected function ensureTestingSchema(): void
