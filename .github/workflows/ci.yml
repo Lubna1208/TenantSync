@@ -67,6 +67,7 @@ jobs:
             echo "DB_HOST=127.0.0.1"
             echo "DB_PORT=3306"
             echo "DB_DATABASE=tenantsync_ci"
+            echo "DB_TEST_DATABASE=tenantsync_ci"
             echo "DB_USERNAME=tenantsync"
             echo "DB_PASSWORD=secret"
             echo "CACHE_DRIVER=array"
