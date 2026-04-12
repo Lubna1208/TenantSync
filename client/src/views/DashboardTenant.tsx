@@ -1,7 +1,19 @@
-import { useEffect, useState, type CSSProperties, type FormEvent } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
+import { authFetch, clearStoredAuth, getStoredToken } from "../helpers/authApi";
 
-const API = "http://localhost:8000/api";
+const CHAT_SYSTEM_PROMPT = `You are a helpful tenant support assistant for a property management platform called TenantSync.
+You only answer questions related to renting, property management, and tenant life.
+Keep answers concise, friendly, and professional.
+
+Common questions you handle:
+- Rent due dates: "Rent is typically due on the 1st of each month. Check your lease or contact your property manager for your specific due date."
+- How to report maintenance: "You can submit a maintenance complaint directly from your TenantSync dashboard using the 'Submit Complaint' button. Fill in the title, category, priority, and description."
+- Office hours: "Office hours vary by property. Contact your property manager through the dashboard announcements section or ask here and I'll do my best to help."
+- Lease questions, payment status, unit information: guide the tenant to check their dashboard or contact their manager.
+
+If asked about anything unrelated to property management or tenancy, politely decline and redirect.`;
+const CHAT_WELCOME_MESSAGE = "Hello! I'm your TenantSync support assistant. How can I help you today?";
 
 type User = {
   id: number;
@@ -19,6 +31,8 @@ type DashboardComplaint = {
   category?: string | null;
   priority?: string | null;
   status: "open" | "in_progress" | "resolved";
+  manager_reply?: string | null;
+  manager_reply_sent_at?: string | null;
   created_at: string;
 };
 
@@ -35,9 +49,16 @@ type DashboardAnnouncement = {
 type DashboardPayment = {
   id: number;
   amount: number;
+  currency?: string | null;
   payment_month: string;
+  stripe_session_id?: string | null;
+  stripe_payment_intent_id?: string | null;
+  payment_method?: string | null;
   status: "paid" | "unpaid" | "pending";
   payment_date?: string | null;
+  paid_at?: string | null;
+  failure_reason?: string | null;
+  receipt_url?: string | null;
 };
 
 type DashboardUnit = {
@@ -69,6 +90,33 @@ type DashboardResponse = {
   complaints: DashboardComplaint[];
   announcements: DashboardAnnouncement[];
 };
+
+type ChatMessage = {
+  role: "user" | "model";
+  text: string;
+};
+
+type GeminiContent = {
+  role: "user" | "model";
+  parts: Array<{ text: string }>;
+};
+
+async function generateGeminiText(contents: GeminiContent[]) {
+  const res = await authFetch("/ai/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ contents }),
+  });
+
+  const data = await res.json().catch(() => null);
+  const reply = data?.reply;
+
+  if (res.ok && typeof reply === "string" && reply.trim()) {
+    return reply;
+  }
+
+  throw new Error(data?.message ?? "AI request failed.");
+}
 
 function safeParseUser(raw: string | null): User | null {
   if (!raw) return null;
@@ -108,6 +156,21 @@ function formatMonth(value?: string | null) {
   });
 }
 
+function formatCurrency(amount?: number | null, currency?: string | null) {
+  const safeAmount = Number(amount ?? 0);
+  const normalizedCurrency = (currency ?? "bdt").toUpperCase();
+
+  if (normalizedCurrency === "BDT") {
+    return `Tk ${safeAmount.toLocaleString()}`;
+  }
+
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: normalizedCurrency,
+    maximumFractionDigits: 2,
+  }).format(safeAmount);
+}
+
 function formatRelative(value: string) {
   const now = new Date();
   const date = new Date(value);
@@ -123,8 +186,21 @@ function formatStatus(value: string) {
   return value.split("_").join(" ").replace(/\b\w/g, (letter: string) => letter.toUpperCase());
 }
 
+function complaintReplyLabel(status: DashboardComplaint["status"]) {
+  if (status === "resolved") {
+    return "Resolved Update";
+  }
+
+  if (status === "in_progress") {
+    return "Work In Progress";
+  }
+
+  return "Manager Reply";
+}
+
 export default function DashboardTenant() {
   const navigate = useNavigate();
+  const processedCheckoutSessionRef = useRef<string | null>(null);
   const [user, setUser] = useState<User | null>(() =>
     safeParseUser(localStorage.getItem("ts_user"))
   );
@@ -148,6 +224,10 @@ export default function DashboardTenant() {
   const [isSubmittingComplaint, setIsSubmittingComplaint] = useState(false);
   const [isPayingRent, setIsPayingRent] = useState(false);
   const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
 
   useEffect(() => {
     if (!user) {
@@ -158,13 +238,49 @@ export default function DashboardTenant() {
     void loadDashboard();
   }, [user, navigate]);
 
+  useEffect(() => {
+    if (!user) {
+      return;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const checkoutStatus = params.get("payment") ?? params.get("checkout");
+    const sessionId = params.get("session_id");
+
+    if (checkoutStatus === "cancelled") {
+      clearCheckoutParams();
+      setMessage("Payment was cancelled.");
+      setError("");
+      void loadDashboard();
+      return;
+    }
+
+    if (checkoutStatus !== "success" || !sessionId) {
+      return;
+    }
+
+    if (processedCheckoutSessionRef.current === sessionId) {
+      return;
+    }
+
+    processedCheckoutSessionRef.current = sessionId;
+    void verifyPayment(sessionId);
+  }, [user]);
+
+  function clearCheckoutParams() {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("payment");
+    url.searchParams.delete("checkout");
+    url.searchParams.delete("session_id");
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  }
+
   async function loadDashboard() {
     setLoading(true);
     setError("");
 
     try {
-      const res = await fetch(`${API}/tenant/dashboard`, {
-        credentials: "include",
+      const res = await authFetch("/tenant/dashboard", {
         cache: "no-store",
       });
 
@@ -198,17 +314,14 @@ export default function DashboardTenant() {
 
   async function logout() {
     try {
-      await fetch(`${API}/auth/logout`, {
+      await authFetch("/auth/logout", {
         method: "POST",
-        credentials: "include",
       });
     } catch {
       // ignore logout failure
     }
 
-    localStorage.removeItem("ts_user");
-    localStorage.removeItem("ts_token");
-    sessionStorage.removeItem("ts_user");
+    clearStoredAuth();
     setUser(null);
     navigate("/login", { replace: true });
   }
@@ -219,24 +332,61 @@ export default function DashboardTenant() {
     setError("");
 
     try {
-      const res = await fetch(`${API}/tenant/rent-payments`, {
+      const res = await authFetch("/tenant/payments/checkout-session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({}),
       });
 
       const data = await res.json().catch(() => null);
+      const checkoutUrl = data?.url;
 
-      if (!res.ok) {
-        setError(data?.message ?? "Rent payment could not be submitted.");
+      if (res.status === 401) {
+        clearStoredAuth();
+        setUser(null);
+        navigate("/login", { replace: true });
         return;
       }
 
-      setMessage(data?.message ?? "Rent payment submitted successfully.");
-      await loadDashboard();
+      if (!res.ok || typeof checkoutUrl !== "string" || !checkoutUrl) {
+        setError(data?.error ?? data?.message ?? "Checkout session could not be created.");
+        return;
+      }
+
+      window.location.assign(checkoutUrl);
     } catch {
-      setError("Network error while submitting rent payment.");
+      setError("Network error while starting payment.");
+    } finally {
+      setIsPayingRent(false);
+    }
+  }
+
+  async function verifyPayment(sessionId: string) {
+    setIsPayingRent(true);
+    setMessage("");
+    setError("");
+
+    try {
+      const res = await authFetch(`/tenant/payments/verify?session_id=${encodeURIComponent(sessionId)}`);
+
+      const data = await res.json().catch(() => null);
+
+      if (res.status === 401) {
+        clearStoredAuth();
+        setUser(null);
+        navigate("/login", { replace: true });
+        return;
+      }
+
+      if (!res.ok) {
+        setError(data?.error ?? data?.message ?? "Could not verify payment status.");
+        return;
+      }
+
+      clearCheckoutParams();
+      await loadDashboard();
+      setMessage(data?.message ?? "Payment verification complete.");
+    } catch {
+      setError("Could not verify payment status.");
     } finally {
       setIsPayingRent(false);
     }
@@ -249,10 +399,9 @@ export default function DashboardTenant() {
     setError("");
 
     try {
-      const res = await fetch(`${API}/tenant/complaints`, {
+      const res = await authFetch("/tenant/complaints", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify(complaintForm),
       });
 
@@ -286,14 +435,13 @@ export default function DashboardTenant() {
     setError("");
 
     try {
-      const token = localStorage.getItem("ts_token");
-      const res = await fetch(`${API}/auth/change-password`, {
+      const token = getStoredToken();
+      const res = await authFetch("/auth/change-password", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        credentials: "include",
         body: JSON.stringify(passwordForm),
       });
 
@@ -318,6 +466,54 @@ export default function DashboardTenant() {
     }
   }
 
+  function openChat() {
+    setChatOpen(true);
+    setChatMessages([{ role: "model", text: CHAT_WELCOME_MESSAGE }]);
+    setChatInput("");
+  }
+
+  function closeChat() {
+    setChatOpen(false);
+    setChatMessages([]);
+    setChatInput("");
+    setChatLoading(false);
+  }
+
+  async function sendChatMessage(e?: FormEvent) {
+    e?.preventDefault();
+
+    const trimmedInput = chatInput.trim();
+    if (!trimmedInput || chatLoading) {
+      return;
+    }
+
+    const nextUserMessage: ChatMessage = { role: "user", text: trimmedInput };
+    const nextMessages = [...chatMessages, nextUserMessage];
+
+    setChatMessages(nextMessages);
+    setChatInput("");
+    setChatLoading(true);
+
+    try {
+      const contents: GeminiContent[] = [
+        { role: "user", parts: [{ text: CHAT_SYSTEM_PROMPT }] },
+        ...nextMessages.map((message) => ({
+          role: message.role,
+          parts: [{ text: message.text }],
+        })),
+      ];
+
+      const reply = await generateGeminiText(contents);
+      setChatMessages((current) => [...current, { role: "model", text: reply }]);
+    } catch (err) {
+      const fallback = err instanceof Error ? err.message : "Sorry, the AI assistant is unavailable right now. Please try again.";
+
+      setChatMessages((current) => [...current, { role: "model", text: fallback }]);
+    } finally {
+      setChatLoading(false);
+    }
+  }
+
   if (!user) return null;
 
   const latestPayment = dashboard?.latest_payment ?? null;
@@ -325,6 +521,21 @@ export default function DashboardTenant() {
   const unit = dashboard?.unit ?? null;
   const property = dashboard?.property ?? null;
   const tenant = dashboard?.tenant ?? null;
+  const dueMonth = formatMonth(dashboard?.next_due_date?.slice(0, 7) ?? latestPayment?.payment_month);
+  const paymentAmount = formatCurrency(
+    latestPayment?.amount ?? unit?.rent_amount ?? 0,
+    latestPayment?.currency ?? "bdt"
+  );
+  const paymentStatusLabel = formatStatus(latestPayment?.status ?? "unpaid");
+  const paymentStatusStyle =
+    latestPayment?.status === "paid"
+      ? styles.badgePaid
+      : latestPayment?.status === "pending"
+        ? styles.badgePending
+        : styles.badgeWarning;
+  const receiptUrl = latestPayment?.receipt_url ?? null;
+  const paymentFailure = latestPayment?.failure_reason ?? "";
+  const paymentMethod = latestPayment?.payment_method ? formatStatus(latestPayment.payment_method) : "Stripe Checkout";
 
   const statCards = [
     {
@@ -522,8 +733,12 @@ export default function DashboardTenant() {
                   onClick={() => void payRent()}
                   disabled={isPayingRent || !unit}
                 >
-                  <span style={styles.actionTitle}>{isPayingRent ? "Processing..." : "Pay Rent"}</span>
-                  <span style={styles.actionText}>Submit your current rent update from here.</span>
+                  <span style={styles.actionTitle}>
+                    {isPayingRent ? "Processing..." : "Pay with Stripe"}
+                  </span>
+                  <span style={styles.actionText}>
+                    Open Stripe Checkout and pay your current rent from Stripe's secure hosted page.
+                  </span>
                 </button>
                 <button
                   style={{ ...styles.actionBtn, ...styles.secondaryAction }}
@@ -536,6 +751,50 @@ export default function DashboardTenant() {
                   <span style={styles.actionText}>Send a maintenance or support request instantly.</span>
                 </button>
               </div>
+            </section>
+
+            <section style={styles.panel}>
+              <div style={styles.sectionHeadRow}>
+                <div>
+                  <div style={styles.sectionBadge}>Payment Details</div>
+                  <h2 style={styles.sectionTitle}>Rent Payment</h2>
+                </div>
+                <span style={{ ...styles.badge, ...paymentStatusStyle }}>{paymentStatusLabel}</span>
+              </div>
+
+              <div style={styles.paymentInfoGrid}>
+                <div style={styles.paymentInfoCard}>
+                  <span style={styles.profileInfoLabel}>Rent Due</span>
+                  <strong style={styles.paymentInfoValue}>{dueMonth}</strong>
+                </div>
+                <div style={styles.paymentInfoCard}>
+                  <span style={styles.profileInfoLabel}>Amount</span>
+                  <strong style={styles.paymentInfoValue}>{paymentAmount}</strong>
+                </div>
+                <div style={styles.paymentInfoCard}>
+                  <span style={styles.profileInfoLabel}>Last Payment Date</span>
+                  <strong style={styles.paymentInfoValue}>
+                    {formatDate(latestPayment?.paid_at ?? latestPayment?.payment_date)}
+                  </strong>
+                </div>
+                <div style={styles.paymentInfoCard}>
+                  <span style={styles.profileInfoLabel}>Payment Method</span>
+                  <strong style={styles.paymentInfoValue}>{paymentMethod}</strong>
+                </div>
+              </div>
+
+              {receiptUrl ? (
+                <a
+                  href={receiptUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={styles.receiptLink}
+                >
+                  Open Stripe receipt
+                </a>
+              ) : null}
+
+              {paymentFailure ? <p style={styles.paymentFailureText}>{paymentFailure}</p> : null}
             </section>
 
             {showComplaintForm && (
@@ -641,6 +900,20 @@ export default function DashboardTenant() {
                           </span>
                           <span style={styles.inlineMeta}>{complaint.category || "General issue"}</span>
                         </div>
+
+                        {complaint.manager_reply ? (
+                          <div style={styles.replyCard}>
+                            <div style={styles.replyHeader}>
+                              <span style={styles.replyBadge}>{complaintReplyLabel(complaint.status)}</span>
+                              <span style={styles.replyMeta}>
+                                {complaint.manager_reply_sent_at
+                                  ? `Sent ${formatDate(complaint.manager_reply_sent_at)}`
+                                  : "Sent by management"}
+                              </span>
+                            </div>
+                            <p style={styles.replyBody}>{complaint.manager_reply}</p>
+                          </div>
+                        ) : null}
                       </article>
                     ))}
                   </div>
@@ -676,6 +949,65 @@ export default function DashboardTenant() {
           </>
         )}
       </div>
+
+      {chatOpen ? (
+        <div style={styles.chatPanel}>
+          <div style={styles.chatHeader}>
+            <div>
+              <div style={styles.chatTitle}>TenantSync AI Support</div>
+              <div style={styles.chatSubtitle}>Property help, maintenance, rent, and lease guidance</div>
+            </div>
+            <button type="button" style={styles.chatCloseButton} onClick={closeChat}>
+              x
+            </button>
+          </div>
+
+          <div style={styles.chatMessages}>
+            {chatMessages.map((message, index) => (
+              <div
+                key={`${message.role}-${index}`}
+                style={{
+                  ...styles.chatMessageRow,
+                  ...(message.role === "user" ? styles.chatMessageRowUser : styles.chatMessageRowModel),
+                }}
+              >
+                <div
+                  style={{
+                    ...styles.chatBubble,
+                    ...(message.role === "user" ? styles.chatBubbleUser : styles.chatBubbleModel),
+                  }}
+                >
+                  {message.text}
+                </div>
+              </div>
+            ))}
+
+            {chatLoading && (
+              <div style={styles.chatMessageRow}>
+                <div style={{ ...styles.chatBubble, ...styles.chatBubbleModel }}>
+                  Thinking...
+                </div>
+              </div>
+            )}
+          </div>
+
+          <form style={styles.chatComposer} onSubmit={sendChatMessage}>
+            <input
+              style={styles.chatInput}
+              placeholder="Ask about rent, complaints, or lease help"
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+            />
+            <button type="submit" style={styles.chatSendButton} disabled={chatLoading || !chatInput.trim()}>
+              Send
+            </button>
+          </form>
+        </div>
+      ) : null}
+
+      <button type="button" style={styles.chatLauncher} onClick={openChat}>
+        Chat
+      </button>
     </div>
   );
 }
@@ -1041,6 +1373,34 @@ const styles: Record<string, CSSProperties> = {
     gap: "12px",
     marginTop: "18px",
   },
+  paymentInfoGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+    gap: "14px",
+  },
+  paymentInfoCard: {
+    borderRadius: "20px",
+    background: "rgba(12, 19, 38, 0.6)",
+    border: "1px solid rgba(176, 193, 227, 0.12)",
+    padding: "16px",
+  },
+  paymentInfoValue: {
+    color: "#f8fbff",
+    fontSize: "18px",
+    lineHeight: 1.5,
+  },
+  receiptLink: {
+    display: "inline-flex",
+    marginTop: "16px",
+    color: "#8fd8ff",
+    fontWeight: 700,
+    textDecoration: "none",
+  },
+  paymentFailureText: {
+    margin: "14px 0 0",
+    color: "#ffd89a",
+    lineHeight: 1.7,
+  },
   input: {
     width: "100%",
     boxSizing: "border-box",
@@ -1116,6 +1476,38 @@ const styles: Record<string, CSSProperties> = {
     color: "#9db8de",
     fontSize: "13px",
   },
+  replyCard: {
+    marginTop: "16px",
+    padding: "16px",
+    borderRadius: "18px",
+    background: "rgba(17, 25, 48, 0.9)",
+    border: "1px solid rgba(126, 215, 255, 0.14)",
+  },
+  replyHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: "12px",
+    marginBottom: "10px",
+  },
+  replyBadge: {
+    display: "inline-flex",
+    padding: "8px 12px",
+    borderRadius: "999px",
+    background: "rgba(31, 72, 128, 0.44)",
+    color: "#8fd8ff",
+    fontSize: "12px",
+    fontWeight: 700,
+  },
+  replyMeta: {
+    color: "#8eaed6",
+    fontSize: "12px",
+  },
+  replyBody: {
+    margin: 0,
+    color: "#e0ebfa",
+    lineHeight: 1.8,
+  },
   badge: {
     display: "inline-flex",
     alignItems: "center",
@@ -1147,6 +1539,130 @@ const styles: Record<string, CSSProperties> = {
     borderRadius: "16px",
     background: "rgba(131, 36, 61, 0.4)",
     color: "#ffd9e1",
+    padding: "12px 16px",
+    cursor: "pointer",
+    fontWeight: 700,
+    fontFamily: "inherit",
+  },
+  chatLauncher: {
+    position: "fixed",
+    right: "28px",
+    bottom: "28px",
+    width: "72px",
+    height: "72px",
+    borderRadius: "50%",
+    border: "1px solid rgba(176, 193, 227, 0.18)",
+    background: "linear-gradient(135deg, rgba(57, 125, 255, 0.96), rgba(31, 190, 234, 0.96))",
+    color: "#f4f7ff",
+    fontSize: "16px",
+    fontWeight: 700,
+    cursor: "pointer",
+    boxShadow: "0 18px 40px rgba(3, 9, 25, 0.34)",
+    zIndex: 20,
+    fontFamily: "inherit",
+  },
+  chatPanel: {
+    position: "fixed",
+    right: "28px",
+    bottom: "90px",
+    width: "360px",
+    maxHeight: "520px",
+    display: "flex",
+    flexDirection: "column",
+    background: "rgba(20, 29, 57, 0.97)",
+    color: "#f4f7ff",
+    borderRadius: "24px",
+    border: "1px solid rgba(176, 193, 227, 0.18)",
+    boxShadow: "0 24px 56px rgba(3, 9, 25, 0.34)",
+    overflow: "hidden",
+    zIndex: 20,
+  },
+  chatHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: "16px",
+    padding: "18px 18px 14px",
+    borderBottom: "1px solid rgba(176, 193, 227, 0.12)",
+  },
+  chatTitle: {
+    fontSize: "18px",
+    fontWeight: 700,
+    color: "#ffffff",
+  },
+  chatSubtitle: {
+    marginTop: "6px",
+    fontSize: "12px",
+    lineHeight: 1.5,
+    color: "#9db8de",
+  },
+  chatCloseButton: {
+    border: "none",
+    background: "transparent",
+    color: "#9db8de",
+    cursor: "pointer",
+    fontSize: "22px",
+    lineHeight: 1,
+    fontFamily: "inherit",
+  },
+  chatMessages: {
+    flex: 1,
+    overflowY: "auto",
+    padding: "16px",
+    display: "flex",
+    flexDirection: "column",
+    gap: "12px",
+  },
+  chatMessageRow: {
+    display: "flex",
+  },
+  chatMessageRowUser: {
+    justifyContent: "flex-end",
+  },
+  chatMessageRowModel: {
+    justifyContent: "flex-start",
+  },
+  chatBubble: {
+    maxWidth: "82%",
+    padding: "12px 14px",
+    borderRadius: "18px",
+    fontSize: "14px",
+    lineHeight: 1.6,
+    whiteSpace: "pre-wrap",
+  },
+  chatBubbleUser: {
+    background: "linear-gradient(135deg, rgba(57, 125, 255, 0.96), rgba(31, 190, 234, 0.96))",
+    color: "#f8fcff",
+    borderBottomRightRadius: "6px",
+  },
+  chatBubbleModel: {
+    background: "rgba(29, 39, 72, 0.92)",
+    color: "#e4eefc",
+    border: "1px solid rgba(176, 193, 227, 0.14)",
+    borderBottomLeftRadius: "6px",
+  },
+  chatComposer: {
+    display: "flex",
+    gap: "10px",
+    padding: "16px",
+    borderTop: "1px solid rgba(176, 193, 227, 0.12)",
+  },
+  chatInput: {
+    flex: 1,
+    borderRadius: "16px",
+    border: "1px solid rgba(86, 112, 159, 0.8)",
+    padding: "12px 14px",
+    background: "rgba(9, 17, 35, 0.74)",
+    color: "#f7fbff",
+    fontSize: "14px",
+    fontFamily: "inherit",
+    outline: "none",
+  },
+  chatSendButton: {
+    border: "none",
+    borderRadius: "16px",
+    background: "linear-gradient(135deg, #397dff, #1fbfea)",
+    color: "#f8fcff",
     padding: "12px 16px",
     cursor: "pointer",
     fontWeight: 700,

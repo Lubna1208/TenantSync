@@ -1,7 +1,6 @@
-import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-
-const API = "http://localhost:8000/api";
+import { authFetch, clearStoredAuth } from "../helpers/authApi";
 
 type User = {
   id: number;
@@ -164,8 +163,6 @@ function getFailureMessage(
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const propertySectionRef = useRef<HTMLElement | null>(null);
-  const managerSectionRef = useRef<HTMLElement | null>(null);
   const [user, setUser] = useState<User | null>(() =>
     safeParseUser(localStorage.getItem("ts_user"))
   );
@@ -177,20 +174,6 @@ export default function Dashboard() {
   const [noticeContext, setNoticeContext] = useState<NoticeContext | null>(null);
   const [hoveredStat, setHoveredStat] = useState<OwnerStatId | null>(null);
   const [hoveredSurface, setHoveredSurface] = useState<string | null>(null);
-  const [focusedField, setFocusedField] = useState<string | null>(null);
-  const [hoveredAction, setHoveredAction] = useState<"property" | "manager" | null>(null);
-  const [managerForm, setManagerForm] = useState({
-    name: "",
-    email: "",
-    password: "",
-    password_confirmation: "",
-  });
-  const [propertyForm, setPropertyForm] = useState({
-    name: "",
-    address: "",
-    total_units: "",
-    manager_id: "",
-  });
   const visibleNotice = error || message;
 
   useEffect(() => {
@@ -228,18 +211,16 @@ export default function Dashboard() {
 
     try {
       const [propertiesRes, managersRes] = await Promise.all([
-        fetch(`${API}/owner/properties`, {
-          credentials: "include",
+        authFetch("/owner/properties", {
           cache: "no-store",
         }),
-        fetch(`${API}/owner/managers`, {
-          credentials: "include",
+        authFetch("/owner/managers", {
           cache: "no-store",
         }),
       ]);
 
       if (!propertiesRes.ok || !managersRes.ok) {
-        localStorage.removeItem("ts_user");
+        clearStoredAuth();
         setUser(null);
         navigate("/login", { replace: true });
         return;
@@ -261,16 +242,14 @@ export default function Dashboard() {
 
   async function logout() {
     try {
-      await fetch(`${API}/auth/logout`, {
+      await authFetch("/auth/logout", {
         method: "POST",
-        credentials: "include",
       });
     } catch {
       // ignore network error
     }
 
-    localStorage.removeItem("ts_user");
-    localStorage.removeItem("ts_token");
+    clearStoredAuth();
     setUser(null);
     navigate("/login", { replace: true });
   }
@@ -293,83 +272,12 @@ export default function Dashboard() {
     setNoticeContext(context);
   }
 
-  async function createManager(e: FormEvent) {
-    e.preventDefault();
-    clearNotice();
-
-    try {
-      const res = await fetch(`${API}/owner/managers`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify(managerForm),
-      });
-
-      const data = await parseResponse<{ message?: string; errors?: unknown }>(res);
-
-      if (!res.ok) {
-        setFailure(getFailureMessage(data, "Manager creation failed."), "manager");
-        return;
-      }
-
-      setManagerForm({
-        name: "",
-        email: "",
-        password: "",
-        password_confirmation: "",
-      });
-      setSuccess(data?.message ?? "Manager created successfully.", "manager");
-      await loadOwnerData();
-    } catch {
-      setFailure("Network error while creating manager.", "manager");
-    }
-  }
-
-  async function createProperty(e: FormEvent) {
-    e.preventDefault();
-    clearNotice();
-
-    try {
-      const res = await fetch(`${API}/owner/properties`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          ...propertyForm,
-          total_units: Number(propertyForm.total_units),
-          manager_id: propertyForm.manager_id
-            ? Number(propertyForm.manager_id)
-            : null,
-        }),
-      });
-
-      const data = await parseResponse<{ message?: string; errors?: unknown }>(res);
-
-      if (!res.ok) {
-        setFailure(getFailureMessage(data, "Property creation failed."), "property");
-        return;
-      }
-
-      setPropertyForm({
-        name: "",
-        address: "",
-        total_units: "",
-        manager_id: "",
-      });
-      setSuccess(data?.message ?? "Property created successfully.", "property");
-      await loadOwnerData();
-    } catch {
-      setFailure("Network error while creating property.", "property");
-    }
-  }
-
   async function removeManager(id: number) {
     clearNotice();
 
     try {
-      const res = await fetch(`${API}/owner/managers/${id}`, {
+      const res = await authFetch(`/owner/managers/${id}`, {
         method: "DELETE",
-        credentials: "include",
       });
 
       const data = await parseResponse<{ message?: string }>(res);
@@ -390,9 +298,8 @@ export default function Dashboard() {
     clearNotice();
 
     try {
-      const res = await fetch(`${API}/owner/properties/${id}`, {
+      const res = await authFetch(`/owner/properties/${id}`, {
         method: "DELETE",
-        credentials: "include",
       });
 
       const data = await parseResponse<{ message?: string }>(res);
@@ -413,10 +320,9 @@ export default function Dashboard() {
     clearNotice();
 
     try {
-      const res = await fetch(`${API}/owner/properties/${propertyId}/manager`, {
+      const res = await authFetch(`/owner/properties/${propertyId}/manager`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify({
           manager_id: managerId ? Number(managerId) : null,
         }),
@@ -476,42 +382,11 @@ export default function Dashboard() {
   ];
   const activeNotice = error || message;
 
-  function getFieldStyle(fieldName: string): CSSProperties {
-    return {
-      ...styles.input,
-      ...(focusedField === fieldName ? styles.inputFocused : undefined),
-    };
-  }
-
-  function getSelectFieldStyle(fieldName: string): CSSProperties {
-    return {
-      ...getFieldStyle(fieldName),
-      ...styles.selectInput,
-    };
-  }
-
-  function getActionButtonStyle(kind: "property" | "manager"): CSSProperties {
-    return {
-      ...styles.primaryBtn,
-      ...(hoveredAction === kind ? styles.primaryBtnHover : undefined),
-    };
-  }
-
   function getSurfaceStyle(key: string, base: CSSProperties): CSSProperties {
     return {
       ...base,
       ...(hoveredSurface === key ? styles.surfaceHover : undefined),
     };
-  }
-
-  function scrollToSection(section: "property" | "manager") {
-    const target =
-      section === "property" ? propertySectionRef.current : managerSectionRef.current;
-
-    target?.scrollIntoView({
-      behavior: "smooth",
-      block: "start",
-    });
   }
 
   return (
@@ -658,11 +533,11 @@ export default function Dashboard() {
             onMouseLeave={() => setHoveredSurface((current) => (
               current === "shortcut-property" ? null : current
             ))}
-            onClick={() => scrollToSection("property")}
+            onClick={() => navigate("/dashboard/properties/new")}
           >
             <strong style={styles.managementActionTitle}>Create Property</strong>
             <span style={styles.managementActionText}>
-              Jump to the property form and property list section.
+              Open the property creation form on a dedicated page.
             </span>
           </button>
 
@@ -673,18 +548,18 @@ export default function Dashboard() {
             onMouseLeave={() => setHoveredSurface((current) => (
               current === "shortcut-manager" ? null : current
             ))}
-            onClick={() => scrollToSection("manager")}
+            onClick={() => navigate("/dashboard/managers/new")}
           >
             <strong style={styles.managementActionTitle}>Create Manager</strong>
             <span style={styles.managementActionText}>
-              Jump to the manager form and manager list section.
+              Open the manager creation form on a dedicated page.
             </span>
           </button>
         </div>
       </section>
 
       <div style={styles.dashboardRows}>
-        <section ref={propertySectionRef} style={styles.pairedSectionBox}>
+        <section style={styles.pairedSectionBox}>
         <div style={styles.pairedSectionHeader}>
           <span style={styles.pairedSectionEyebrow}>Property Action</span>
         </div>
@@ -699,120 +574,7 @@ export default function Dashboard() {
             {activeNotice}
           </div>
         )}
-        <div style={styles.dashboardPairGrid}>
-          <form
-            onSubmit={createProperty}
-            style={getSurfaceStyle("form-property", styles.formCard)}
-            onMouseEnter={() => setHoveredSurface("form-property")}
-            onMouseLeave={() => setHoveredSurface((current) => (
-              current === "form-property" ? null : current
-            ))}
-          >
-            <div style={styles.formCardHeader}>
-              <h3 style={styles.formCardTitle}>Create Property</h3>
-              <p style={styles.formCardText}>
-                Add a building first, then optionally assign a manager now or later.
-              </p>
-            </div>
-
-            <div style={styles.formFields}>
-              <label style={styles.formField}>
-                <span style={styles.formLabel}>Property Name</span>
-                <input
-                  style={getFieldStyle("property_name")}
-                  placeholder="Enter property name"
-                  value={propertyForm.name}
-                  onFocus={() => setFocusedField("property_name")}
-                  onBlur={() => setFocusedField((current) => (
-                    current === "property_name" ? null : current
-                  ))}
-                  onChange={(e) =>
-                    setPropertyForm((current) => ({ ...current, name: e.target.value }))
-                  }
-                />
-              </label>
-
-              <label style={styles.formField}>
-                <span style={styles.formLabel}>Property Address</span>
-                <input
-                  style={getFieldStyle("property_address")}
-                  placeholder="Enter property address"
-                  value={propertyForm.address}
-                  onFocus={() => setFocusedField("property_address")}
-                  onBlur={() => setFocusedField((current) => (
-                    current === "property_address" ? null : current
-                  ))}
-                  onChange={(e) =>
-                    setPropertyForm((current) => ({
-                      ...current,
-                      address: e.target.value,
-                    }))
-                  }
-                />
-              </label>
-
-              <label style={styles.formField}>
-                <span style={styles.formLabel}>Total Units</span>
-                <input
-                  className="admin-number-input"
-                  style={getFieldStyle("property_units")}
-                  type="number"
-                  min="1"
-                  placeholder="Enter total units"
-                  value={propertyForm.total_units}
-                  onFocus={() => setFocusedField("property_units")}
-                  onBlur={() => setFocusedField((current) => (
-                    current === "property_units" ? null : current
-                  ))}
-                  onChange={(e) =>
-                    setPropertyForm((current) => ({
-                      ...current,
-                      total_units: e.target.value,
-                    }))
-                  }
-                />
-              </label>
-
-              <label style={styles.formField}>
-                <span style={styles.formLabel}>Assign Manager</span>
-                <select
-                  style={getSelectFieldStyle("property_manager")}
-                  value={propertyForm.manager_id}
-                  onFocus={() => setFocusedField("property_manager")}
-                  onBlur={() => setFocusedField((current) => (
-                    current === "property_manager" ? null : current
-                  ))}
-                  onChange={(e) =>
-                    setPropertyForm((current) => ({
-                      ...current,
-                      manager_id: e.target.value,
-                    }))
-                  }
-                >
-                  <option style={styles.selectOption} value="">
-                    Assign manager later
-                  </option>
-                  {managers.map((manager) => (
-                    <option style={styles.selectOption} key={manager.id} value={manager.id}>
-                      {manager.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-
-            <button
-              type="submit"
-              style={getActionButtonStyle("property")}
-              onMouseEnter={() => setHoveredAction("property")}
-              onMouseLeave={() => setHoveredAction((current) => (
-                current === "property" ? null : current
-              ))}
-            >
-              Save Property
-            </button>
-          </form>
-
+        <div style={styles.dashboardSingleGrid}>
         <div
           style={getSurfaceStyle("panel-properties", styles.panel)}
           onMouseEnter={() => setHoveredSurface("panel-properties")}
@@ -912,7 +674,7 @@ export default function Dashboard() {
         </div>
         </section>
 
-        <section ref={managerSectionRef} style={styles.pairedSectionBox}>
+        <section style={styles.pairedSectionBox}>
         <div style={styles.pairedSectionHeader}>
           <span style={styles.pairedSectionEyebrow}>Manager Action</span>
         </div>
@@ -927,109 +689,7 @@ export default function Dashboard() {
             {activeNotice}
           </div>
         )}
-        <div style={styles.dashboardPairGrid}>
-          <form
-            onSubmit={createManager}
-            style={getSurfaceStyle("form-manager", styles.formCard)}
-            onMouseEnter={() => setHoveredSurface("form-manager")}
-            onMouseLeave={() => setHoveredSurface((current) => (
-              current === "form-manager" ? null : current
-            ))}
-          >
-            <div style={styles.formCardHeader}>
-              <h3 style={styles.formCardTitle}>Create Manager</h3>
-              <p style={styles.formCardText}>
-                The owner creates the manager&apos;s email and password for first login.
-              </p>
-            </div>
-
-            <div style={styles.formFields}>
-              <label style={styles.formField}>
-                <span style={styles.formLabel}>Manager Name</span>
-                <input
-                  style={getFieldStyle("manager_name")}
-                  placeholder="Enter manager name"
-                  value={managerForm.name}
-                  onFocus={() => setFocusedField("manager_name")}
-                  onBlur={() => setFocusedField((current) => (
-                    current === "manager_name" ? null : current
-                  ))}
-                  onChange={(e) =>
-                    setManagerForm((current) => ({ ...current, name: e.target.value }))
-                  }
-                />
-              </label>
-
-              <label style={styles.formField}>
-                <span style={styles.formLabel}>Manager Email</span>
-                <input
-                  style={getFieldStyle("manager_email")}
-                  type="email"
-                  placeholder="Enter manager email"
-                  value={managerForm.email}
-                  onFocus={() => setFocusedField("manager_email")}
-                  onBlur={() => setFocusedField((current) => (
-                    current === "manager_email" ? null : current
-                  ))}
-                  onChange={(e) =>
-                    setManagerForm((current) => ({ ...current, email: e.target.value }))
-                  }
-                />
-              </label>
-
-              <label style={styles.formField}>
-                <span style={styles.formLabel}>Password</span>
-                <input
-                  style={getFieldStyle("manager_password")}
-                  type="password"
-                  placeholder="Enter password"
-                  value={managerForm.password}
-                  onFocus={() => setFocusedField("manager_password")}
-                  onBlur={() => setFocusedField((current) => (
-                    current === "manager_password" ? null : current
-                  ))}
-                  onChange={(e) =>
-                    setManagerForm((current) => ({
-                      ...current,
-                      password: e.target.value,
-                    }))
-                  }
-                />
-              </label>
-
-              <label style={styles.formField}>
-                <span style={styles.formLabel}>Confirm Password</span>
-                <input
-                  style={getFieldStyle("manager_password_confirmation")}
-                  type="password"
-                  placeholder="Confirm password"
-                  value={managerForm.password_confirmation}
-                  onFocus={() => setFocusedField("manager_password_confirmation")}
-                  onBlur={() => setFocusedField((current) => (
-                    current === "manager_password_confirmation" ? null : current
-                  ))}
-                  onChange={(e) =>
-                    setManagerForm((current) => ({
-                      ...current,
-                      password_confirmation: e.target.value,
-                    }))
-                  }
-                />
-              </label>
-            </div>
-
-            <button
-              type="submit"
-              style={getActionButtonStyle("manager")}
-              onMouseEnter={() => setHoveredAction("manager")}
-              onMouseLeave={() => setHoveredAction((current) => (
-                current === "manager" ? null : current
-              ))}
-            >
-              Save Manager
-            </button>
-          </form>
-
+        <div style={styles.dashboardSingleGrid}>
         <div
           style={getSurfaceStyle("panel-managers", styles.panel)}
           onMouseEnter={() => setHoveredSurface("panel-managers")}
@@ -1348,6 +1008,12 @@ const styles: { [key: string]: CSSProperties } = {
   dashboardPairGrid: {
     display: "grid",
     gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+    gap: "24px",
+    alignItems: "stretch",
+  },
+  dashboardSingleGrid: {
+    display: "grid",
+    gridTemplateColumns: "minmax(0, 1fr)",
     gap: "24px",
     alignItems: "stretch",
   },

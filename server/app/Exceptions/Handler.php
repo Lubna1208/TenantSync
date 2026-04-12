@@ -2,7 +2,11 @@
 
 namespace App\Exceptions;
 
+use Illuminate\Auth\AuthenticationException;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Validation\ValidationException;
 use Throwable;
 
 class Handler extends ExceptionHandler
@@ -48,12 +52,38 @@ class Handler extends ExceptionHandler
      */
     public function render($request, Throwable $exception)
     {
-        $message = $this->getMessage($exception);
+        if (! $request->expectsJson() && ! $request->is('api/*')) {
+            return parent::render($request, $exception);
+        }
+
+        if ($exception instanceof ValidationException) {
+            return response()->json([
+                'message' => 'Validation failed',
+                'errors' => $exception->errors(),
+            ], $exception->status);
+        }
+
+        if ($exception instanceof AuthenticationException) {
+            return response()->json([
+                'message' => 'Unauthenticated.',
+            ], 401);
+        }
+
+        if ($exception instanceof ModelNotFoundException) {
+            return response()->json([
+                'message' => 'Resource not found.',
+            ], 404);
+        }
+
+        if ($exception instanceof QueryException) {
+            return response()->json([
+                'message' => $this->friendlyDatabaseMessage($exception),
+            ], 422);
+        }
 
         return response()->json([
-            'success' => false,
-            'message' => $message,
-        ], 200);
+            'message' => $this->getMessage($exception),
+        ], 500);
     }
 
 
@@ -75,6 +105,27 @@ class Handler extends ExceptionHandler
         }
 
         return $exception->getMessage() ?: 'An unexpected error occurred.';
+    }
+
+    protected function friendlyDatabaseMessage(QueryException $exception): string
+    {
+        $sqlState = $exception->errorInfo[0] ?? null;
+        $driverCode = $exception->errorInfo[1] ?? null;
+        $rawMessage = strtolower($exception->getMessage());
+
+        if ($sqlState === '22003' || $driverCode === 1264 || str_contains($rawMessage, 'out of range value')) {
+            if (str_contains($rawMessage, 'total_units')) {
+                return 'Total units is too large. Please enter a smaller value.';
+            }
+
+            return 'One of the values is too large. Please enter a smaller value.';
+        }
+
+        if ($sqlState === '23000') {
+            return 'The submitted data conflicts with an existing record or related data.';
+        }
+
+        return 'The submitted data could not be saved.';
     }
 
 }

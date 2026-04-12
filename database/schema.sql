@@ -140,6 +140,8 @@ CREATE TABLE `complaints` (
   `category` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `priority` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `status` enum('open','in_progress','resolved') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'open',
+  `manager_reply` text COLLATE utf8mb4_unicode_ci,
+  `manager_reply_sent_at` timestamp NULL DEFAULT NULL,
   `created_at` timestamp NULL DEFAULT NULL,
   `updated_at` timestamp NULL DEFAULT NULL,
   PRIMARY KEY (`id`),

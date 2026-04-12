@@ -10,16 +10,22 @@ use App\Http\Controllers\ComplaintController;
 use App\Http\Controllers\AnnouncementController;
 use App\Http\Controllers\OwnerController;
 use App\Http\Controllers\ManagerController;
+use App\Http\Controllers\StripePaymentController;
+use App\Http\Controllers\TenantInvitationController;
+use App\Http\Controllers\AiController;
 
 Route::post('/auth/register', [AuthController::class, 'register']);
 Route::post('/auth/login', [AuthController::class, 'login']);
 Route::post('/auth/logout', [AuthController::class, 'logout'])->middleware(['jwt.cookie']);
+Route::post('/auth/refresh', [AuthController::class, 'refresh'])->middleware(['jwt.cookie']);
+Route::get('/tenant-invitations/{token}', [TenantInvitationController::class, 'show']);
+Route::post('/tenant-invitations/{token}/accept', [TenantInvitationController::class, 'accept']);
 
 
 Route::middleware(['jwt.cookie', 'auth.api.user'])->group(function () {
     Route::get('/auth/me', [AuthController::class, 'me']);
-    Route::post('/auth/refresh', [AuthController::class, 'refresh']);
     Route::post('/auth/change-password', [AuthController::class, 'changePassword']);
+    Route::post('/ai/generate', [AiController::class, 'generate']);
 
     Route::middleware('role:admin')->prefix('owner')->group(function () {
         Route::get('/managers', [OwnerController::class, 'managers']);
@@ -30,6 +36,9 @@ Route::middleware(['jwt.cookie', 'auth.api.user'])->group(function () {
         Route::post('/properties', [OwnerController::class, 'storeProperty']);
         Route::delete('/properties/{id}', [OwnerController::class, 'destroyProperty']);
         Route::patch('/properties/{id}/manager', [OwnerController::class, 'assignManager']);
+
+        Route::post('/properties/{id}/units', [OwnerController::class, 'storeUnit']);
+        Route::post('/units/{id}/assign-tenant', [OwnerController::class, 'assignTenant']);
     });
 
     Route::middleware('role:manager')->prefix('manager')->group(function () {
@@ -41,6 +50,7 @@ Route::middleware(['jwt.cookie', 'auth.api.user'])->group(function () {
         Route::delete('/units/{id}/tenant', [ManagerController::class, 'removeTenant']);
         Route::get('/complaints', [ManagerController::class, 'complaints']);
         Route::patch('/complaints/{id}', [ManagerController::class, 'updateComplaint']);
+        Route::post('/complaints/{id}/reply', [ManagerController::class, 'sendComplaintReply']);
         Route::post('/rent-payments', [ManagerController::class, 'storeRentPayment']);
         Route::post('/announcements', [ManagerController::class, 'storeAnnouncement']);
     });
@@ -48,6 +58,8 @@ Route::middleware(['jwt.cookie', 'auth.api.user'])->group(function () {
     Route::middleware('role:tenant')->prefix('tenant')->group(function () {
         Route::get('/dashboard', [TenantController::class, 'dashboard']);
         Route::post('/complaints', [TenantController::class, 'storeComplaint']);
+        Route::post('/payments/checkout-session', [StripePaymentController::class, 'createCheckoutSession']);
+        Route::get('/payments/verify', [StripePaymentController::class, 'verifySession']);
         Route::post('/rent-payments', [TenantController::class, 'storeRentPayment']);
     });
 
@@ -81,6 +93,8 @@ Route::middleware(['jwt.cookie'])->get('/debug-auth', function () {
         ], 500);
     }
 });
+
+Route::post('/stripe/webhook', [StripePaymentController::class, 'handleWebhook']);
 
 Route::get('/ping', function () {
     return response()->json(['ok' => true]);
